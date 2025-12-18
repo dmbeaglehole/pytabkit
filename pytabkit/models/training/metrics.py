@@ -383,7 +383,7 @@ class Metrics:
         elif metric_name == '1-auc_ovo':
             return 1.0 - Metrics.apply_sklearn_classification_metric(
                 y_pred, y, lambda y1, y2: roc_auc_score(y1, y2, multi_class='ovo'), needs_pred_probs=True)
-        elif metric_name == '1-auc_ovr':
+        elif metric_name == '1-auroc-ovr':
             return 1.0 - Metrics.apply_sklearn_classification_metric(
                 y_pred, y, lambda y1, y2: roc_auc_score(y1, y2, multi_class='ovr'), needs_pred_probs=True)
         elif metric_name == '1-auc_ovr_alt':

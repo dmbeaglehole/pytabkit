@@ -125,6 +125,7 @@ class xRFMSubSplitInterface(SingleSplitAlgInterface):
             y_train = y_train.long()
             y_val = y_val.long()
 
+
         bandwidth = self.config.get('bandwidth', 10)
         p_interp = self.config.get('p_interp', 0.0)
         exponent = self.config.get('exponent', 1.0)
@@ -188,7 +189,7 @@ class xRFMSubSplitInterface(SingleSplitAlgInterface):
             '1-auroc-ovr': 'auc',
             'class_error': 'accuracy',
             'mse': 'mse',
-            'rmse': 'rmse',
+            'rmse': 'mse',
             'logloss': 'logloss',
             'cross_entropy': 'logloss',
             'brier': 'mse',
@@ -284,7 +285,7 @@ def sample_xrfm_params(seed: int, hpo_space_name: str = 'default'):
     elif hpo_space_name == 'only_l2':
         num_tfms_list = [['mean_center', 'l2_normalize']]
         num_tfms = num_tfms_list[rng.integers(len(num_tfms_list))]
-        cat_tfms_list = [['ordinal_encoding'], ['one_hot']]
+        cat_tfms_list = [['one_hot']]
         cat_tfms = cat_tfms_list[rng.integers(len(cat_tfms_list))]
         params = {
             'bandwidth': np.exp(rng.uniform(np.log(0.5), np.log(200.0))),
