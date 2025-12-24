@@ -147,6 +147,9 @@ class xRFMSubSplitInterface(SingleSplitAlgInterface):
         bandwidth_mode = self.config.get('bandwidth_mode', 'constant')
         kernel_type = self.config.get('kernel_type', 'l2')
         split_method = self.config.get('split_method', 'top_vector_agop_on_subset')
+        sumpower_const_mix = self.config.get('sumpower_const_mix', 0.0)
+        sumpower_power = self.config.get('sumpower_power', 2)
+        sumpower_eps = self.config.get('sumpower_eps', None)
         if bandwidth_mode in ['constant', 'adaptive']:
             pass
         elif bandwidth_mode == 'sqrtd':
@@ -176,6 +179,12 @@ class xRFMSubSplitInterface(SingleSplitAlgInterface):
         model_params['bandwidth_mode'] = bandwidth_mode
         model_params['diag'] = diag
         model_params['fast_categorical'] = fast_categorical
+        if kernel_type in ['sum_power_laplace', 'kermac_sum_power_laplace', 'l1_power']:
+            model_params['const_mix'] = float(sumpower_const_mix)
+            model_params['power'] = int(sumpower_power)
+            # Only forward eps when explicitly specified (keep kernel defaults otherwise)
+            if sumpower_eps is not None:
+                model_params['eps'] = float(sumpower_eps)
         fit_params['reg'] = reg
         fit_params['iters'] = iters
         fit_params['verbose'] = True
@@ -301,6 +310,27 @@ def sample_xrfm_params(seed: int, hpo_space_name: str = 'default'):
             # 'early_stop_rfm': True,
             # 'early_stop_multiplier': 1.1, # early stop if val metric > esm * best val metric (for loss)
             # 'split_method': 'top_vector_agop_on_subset',
+        }
+    elif hpo_space_name == 'default-sumpower':
+        # Like 'default', but restrict kernel choice to SumPowerLaplaceKernel and add its hyperparameters.
+        # We also keep bandwidth_mode fixed to 'constant' since sumpower does not support adaptive bandwidth.
+        num_tfms_list = [['mean_center', 'l2_normalize']]
+        num_tfms = num_tfms_list[rng.integers(len(num_tfms_list))]
+        cat_tfms_list = [['ordinal_encoding'], ['one_hot']]
+        cat_tfms = cat_tfms_list[rng.integers(len(cat_tfms_list))]
+        params = {
+            'bandwidth_mode': 'constant',
+            'bandwidth': np.exp(rng.uniform(np.log(0.5), np.log(200.0))),
+            'reg': np.exp(rng.uniform(np.log(1e-6), np.log(10.))),
+            'exponent': rng.uniform(0.7, 1.4),
+            # Keep the original parameter around for backwards compatibility, even though sumpower doesn't use it.
+            'p_interp': rng.uniform(0., 0.8),
+            'tfms': num_tfms + cat_tfms,
+            'diag': rng.choice([False, True]),
+            'kernel_type': 'sum_power_laplace',
+            # New sumpower kernel hyperparameters
+            'sumpower_const_mix': np.exp(rng.uniform(np.log(1e-5), np.log(0.3))),
+            'sumpower_power': int(rng.integers(1, 5)),  # {1,2,3,4}
         }
     elif hpo_space_name == 'only_l2':
         num_tfms_list = [['mean_center', 'l2_normalize']]
