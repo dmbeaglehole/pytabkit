@@ -316,21 +316,42 @@ def sample_xrfm_params(seed: int, hpo_space_name: str = 'default'):
         # We also keep bandwidth_mode fixed to 'constant' since sumpower does not support adaptive bandwidth.
         num_tfms_list = [['mean_center', 'l2_normalize']]
         num_tfms = num_tfms_list[rng.integers(len(num_tfms_list))]
-        cat_tfms_list = [['ordinal_encoding'], ['one_hot']]
+        cat_tfms_list = [['one_hot']]
         cat_tfms = cat_tfms_list[rng.integers(len(cat_tfms_list))]
         params = {
             'bandwidth_mode': 'constant',
+            'bandwidth': np.exp(rng.uniform(np.log(1e-2), np.log(5.0))),
+            'reg': np.exp(rng.uniform(np.log(1e-4), np.log(10.))),
+            'exponent': rng.uniform(0.9, 1.8),
+            'tfms': num_tfms + cat_tfms,
+            # 'diag': rng.choice([False, True]),
+            'kernel_type': 'sum_power_laplace',
+            # New sumpower kernel hyperparameters
+            # 'sumpower_const_mix': np.exp(rng.uniform(np.log(1e-6), np.log(3e-2))),
+            'sumpower_power': rng.uniform(2.0, 6.0),
+        }
+    elif hpo_space_name == 'simplified-lpq':
+        num_tfms_list = [['mean_center', 'l2_normalize']]
+        num_tfms = num_tfms_list[rng.integers(len(num_tfms_list))]
+        cat_tfms_list = [['one_hot']]
+        cat_tfms = cat_tfms_list[rng.integers(len(cat_tfms_list))]
+        params = {
             'bandwidth': np.exp(rng.uniform(np.log(0.5), np.log(200.0))),
             'reg': np.exp(rng.uniform(np.log(1e-6), np.log(10.))),
             'exponent': rng.uniform(0.7, 1.4),
-            # Keep the original parameter around for backwards compatibility, even though sumpower doesn't use it.
-            'p_interp': rng.uniform(0., 0.8),
             'tfms': num_tfms + cat_tfms,
             'diag': rng.choice([False, True]),
-            'kernel_type': 'sum_power_laplace',
-            # New sumpower kernel hyperparameters
-            'sumpower_const_mix': np.exp(rng.uniform(np.log(1e-5), np.log(0.3))),
-            'sumpower_power': int(rng.integers(1, 5)),  # {1,2,3,4}
+            'kernel_type': rng.choice(['lpq', 'l2'], p=[0.8, 0.2]),
+            # don't set these here so they can be overridden
+            # 'bandwidth_mode': rng.choice(['constant']),
+            # 'kernel_type': 'l2',
+            # 'min_subset_size': 60_000,
+            # 'rfm_iters': 5,
+            # 'classification_mode': 'prevalence',
+            # 'binary_solver': 'solve',
+            # 'early_stop_rfm': True,
+            # 'early_stop_multiplier': 1.1, # early stop if val metric > esm * best val metric (for loss)
+            # 'split_method': 'top_vector_agop_on_subset',
         }
     elif hpo_space_name == 'only_l2':
         num_tfms_list = [['mean_center', 'l2_normalize']]
@@ -343,16 +364,6 @@ def sample_xrfm_params(seed: int, hpo_space_name: str = 'default'):
             'exponent': rng.uniform(0.7, 1.4),
             'tfms': num_tfms + cat_tfms,
             'diag': rng.choice([False, True]),
-            # don't set these here so they can be overridden
-            # 'bandwidth_mode': rng.choice(['constant']),
-            # 'kernel_type': 'l2',
-            # 'min_subset_size': 60_000,
-            # 'rfm_iters': 5,
-            # 'classification_mode': 'prevalence',
-            # 'binary_solver': 'solve',
-            # 'early_stop_rfm': True,
-            # 'early_stop_multiplier': 1.1, # early stop if val metric > esm * best val metric (for loss)
-            # 'split_method': 'top_vector_agop_on_subset',
         }
     elif hpo_space_name == 'paper-large':
         # used on meta-test in the paper

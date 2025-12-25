@@ -372,6 +372,10 @@ class Metrics:
             return cos_loss(y_pred, y)
         elif metric_name == 'cross_entropy':
             return cross_entropy(y_pred, y)
+        elif metric_name in ('logloss', 'log_loss'):
+            # Compatibility alias: older configs / external interfaces sometimes use "logloss"
+            # for (multi-class) cross entropy. This should not require the optional probmetrics dependency.
+            return cross_entropy(y_pred, y)
         elif metric_name == 'n_cross_entropy':
             n_classes = y_pred.shape[-1]
             y_avg_log = torch.log(get_y_probs(y, n_classes) + 1e-30)
