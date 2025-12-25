@@ -171,6 +171,69 @@ class xRFMSubSplitInterface(SingleSplitAlgInterface):
 
         print(f'{kernel_type=}, {M_batch_size=}')
 
+
+        if kernel_type == 'sum_power_laplace':
+            # SumPowerLaplace tends to prefer a much smaller bandwidth range than the default lpq/l2 kernels.
+            # When we land on this kernel inside a broader/random search space (e.g. 'default' or 'sumpower-lpq'),
+            # we re-parameterize (linear in log-space) to match the dedicated 'default-sumpower' ranges.
+            #
+            # This keeps the *effective* search space comparable across kernels, rather than silently placing
+            # SumPowerLaplace into an out-of-distribution bandwidth/regularization regime.
+            if self.config.get('reparam_sumpower_search_space', True):
+                hpo_space_name = self.config.get('hpo_space_name', None)
+                # If we're already using the dedicated sumpower space, don't re-map (it would be redundant and
+                # potentially distort custom user choices).
+                if hpo_space_name == 'default-sumpower':
+                    hpo_space_name = None
+
+                # Source ranges based on the sampler in sample_xrfm_params()
+                if hpo_space_name in {
+                    'paper-large', 'paper-large-pca',
+                    'large-soft', 'large-soft-pca',
+                    'large-temptune', 'large-temptune-pca', 'large-temptune-rf',
+                }:
+                    bw_src = (0.4, 80.0)
+                    reg_src = (1e-5, 50.0)
+                    exponent_src = (0.7, 1.3)
+                else:
+                    # 'default', 'simplified-lpq', 'sumpower-lpq', 'only_l2', and unknown/custom spaces
+                    bw_src = (0.5, 200.0)
+                    reg_src = (1e-6, 10.0)
+                    exponent_src = (0.7, 1.4)
+
+                # Target ranges for 'default-sumpower'
+                bw_dst = (1e-2, 5.0)
+                reg_dst = (1e-4, 10.0)
+                exponent_dst = (0.8, 1.5)
+
+                def _remap_log_uniform(v: float, src: Tuple[float, float], dst: Tuple[float, float]) -> float:
+                    v = float(v)
+                    if not (np.isfinite(v) and v > 0):
+                        return v
+                    s0, s1 = src
+                    d0, d1 = dst
+                    # percentile in log-space (clamped) -> mapped log-space value
+                    u = (np.log(v) - np.log(s0)) / (np.log(s1) - np.log(s0))
+                    u = float(np.clip(u, 0.0, 1.0))
+                    return float(np.exp(np.log(d0) + u * (np.log(d1) - np.log(d0))))
+
+                def _remap_uniform(v: float, src: Tuple[float, float], dst: Tuple[float, float]) -> float:
+                    v = float(v)
+                    if not np.isfinite(v):
+                        return v
+                    s0, s1 = src
+                    d0, d1 = dst
+                    if s1 == s0:
+                        return v
+                    # percentile in linear space (clamped) -> mapped linear space value
+                    u = (v - s0) / (s1 - s0)
+                    u = float(np.clip(u, 0.0, 1.0))
+                    return float(d0 + u * (d1 - d0))
+
+                exponent = _remap_uniform(exponent, exponent_src, exponent_dst)
+                bandwidth = _remap_log_uniform(bandwidth, bw_src, bw_dst)
+                reg = _remap_log_uniform(reg, reg_src, reg_dst)
+
         model_params, fit_params = {}, {}
         model_params['kernel'] = kernel_type
         model_params['bandwidth'] = bandwidth
@@ -322,10 +385,28 @@ def sample_xrfm_params(seed: int, hpo_space_name: str = 'default'):
             'bandwidth_mode': 'constant',
             'bandwidth': np.exp(rng.uniform(np.log(1e-2), np.log(5.0))),
             'reg': np.exp(rng.uniform(np.log(1e-4), np.log(10.))),
-            'exponent': rng.uniform(0.9, 1.8),
+            'exponent': rng.uniform(0.8, 1.5),
             'tfms': num_tfms + cat_tfms,
-            # 'diag': rng.choice([False, True]),
+            'diag': rng.choice([False, True]),
             'kernel_type': 'sum_power_laplace',
+            # New sumpower kernel hyperparameters
+            # 'sumpower_const_mix': np.exp(rng.uniform(np.log(1e-6), np.log(3e-2))),
+            'sumpower_power': rng.uniform(2.0, 6.0),
+        }
+    elif hpo_space_name == 'sumpower-lpq':
+        num_tfms_list = [['mean_center', 'l2_normalize']]
+        num_tfms = num_tfms_list[rng.integers(len(num_tfms_list))]
+        cat_tfms_list = [['one_hot']]
+        cat_tfms = cat_tfms_list[rng.integers(len(cat_tfms_list))]
+        params = {
+            'bandwidth_mode': 'constant',
+            'bandwidth': np.exp(rng.uniform(np.log(0.5), np.log(200.0))),
+            'reg': np.exp(rng.uniform(np.log(1e-6), np.log(10.))),
+            'exponent': rng.uniform(0.7, 1.4),
+            'tfms': num_tfms + cat_tfms,
+            'diag': rng.choice([False, True]),
+            'p_interp': rng.uniform(0., 0.66),
+            'kernel_type': rng.choice(['sum_power_laplace', 'lpq', 'l2'], p=[0.4, 0.4, 0.2]),
             # New sumpower kernel hyperparameters
             # 'sumpower_const_mix': np.exp(rng.uniform(np.log(1e-6), np.log(3e-2))),
             'sumpower_power': rng.uniform(2.0, 6.0),
@@ -342,6 +423,7 @@ def sample_xrfm_params(seed: int, hpo_space_name: str = 'default'):
             'tfms': num_tfms + cat_tfms,
             'diag': rng.choice([False, True]),
             'kernel_type': rng.choice(['lpq', 'l2'], p=[0.8, 0.2]),
+            'p_interp': rng.uniform(0., 0.8),
             # don't set these here so they can be overridden
             # 'bandwidth_mode': rng.choice(['constant']),
             # 'kernel_type': 'l2',
