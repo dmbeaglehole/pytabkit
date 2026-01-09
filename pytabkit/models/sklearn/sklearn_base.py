@@ -162,6 +162,10 @@ class AlgInterfaceEstimator(BaseEstimator):
         :param time_to_fit_in_seconds: Time limit in seconds for fitting.
             Currently only implemented for RealMLP (default=None). If None, no time limit will be applied.
         :return: Returns self.
+
+        Note: For HPO estimators (e.g., XRFM_HPO_Classifier, XRFM_HPO_Regressor), you can query
+        `model.hyperopt_progress_` dict which contains {'step': current_step, 'total_steps': total}
+        for async UI updates during fitting.
         """
 
         # do a first check, this includes to check if X or y are not None before other things are done to them
@@ -301,6 +305,16 @@ class AlgInterfaceEstimator(BaseEstimator):
 
         # set n_features_in_ as required by https://scikit-learn.org/stable/developers/develop.html
         self.n_features_in_ = ds.tensor_infos['x_cont'].get_n_features() + ds.tensor_infos['x_cat'].get_n_features()
+
+        # Store progress state for use in _create_alg_interface
+        # hyperopt_progress_ can be queried asynchronously from another thread/UI
+        # If hyperopt_progress_ was set externally before fit(), use it; otherwise create new
+        if not hasattr(self, 'hyperopt_progress_') or self.hyperopt_progress_ is None:
+            self.hyperopt_progress_ = {'step': 0, 'total_steps': 0}
+        else:
+            # Reset the existing progress dict
+            self.hyperopt_progress_['step'] = 0
+            self.hyperopt_progress_['total_steps'] = 0
 
         self.cv_alg_interface_ = self._create_alg_interface(n_cv=n_cv)
 

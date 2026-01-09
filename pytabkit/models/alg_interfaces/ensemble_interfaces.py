@@ -59,9 +59,18 @@ class CaruanaEnsembleAlgInterface(SingleSplitAlgInterface):
         self.alg_interfaces = copy.deepcopy(self.alg_interfaces)
 
         sub_fit_params = []
+        hyperopt_progress = self.config.get('hyperopt_progress', None)
+        n_total_steps = len(self.alg_contexts_)
+
+        # Initialize progress state for async UI updates
+        if hyperopt_progress is not None:
+            hyperopt_progress['total_steps'] = n_total_steps
 
         # train sub-models
         for alg_idx, alg_ctx in enumerate(self.alg_contexts_):
+            # Update progress state for async UI updates
+            if hyperopt_progress is not None:
+                hyperopt_progress['step'] = alg_idx
             with alg_ctx as alg_interface:
                 sub_tmp_folders = [tmp_folder / str(alg_idx) if tmp_folder is not None else None for tmp_folder in
                                    tmp_folders]
@@ -246,10 +255,19 @@ class AlgorithmSelectionAlgInterface(SingleSplitAlgInterface):
 
         time_limit_s: Optional[float] = self.config.get('time_limit_s', None)
         start_time = time.time()
+        hyperopt_progress = self.config.get('hyperopt_progress', None)
+        n_total_steps = len(self.alg_contexts_)
+
+        # Initialize progress state for async UI updates
+        if hyperopt_progress is not None:
+            hyperopt_progress['total_steps'] = n_total_steps
 
         for alg_idx, alg_ctx in enumerate(self.alg_contexts_):
             if alg_idx > 0 and time_limit_s is not None and (alg_idx+1)/alg_idx*(time.time()-start_time) > time_limit_s:
                 break
+            # Update progress state for async UI updates
+            if hyperopt_progress is not None:
+                hyperopt_progress['step'] = alg_idx
             with alg_ctx as alg_interface:
                 sub_tmp_folders = [tmp_folder / str(alg_idx) if tmp_folder is not None else None for tmp_folder in
                                    tmp_folders]

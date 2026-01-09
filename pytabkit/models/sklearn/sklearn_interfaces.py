@@ -2272,6 +2272,9 @@ class XRFM_HPO_Classifier(XRFMHPOConstructorMixin, AlgInterfaceClassifier):
         from pytabkit.models.alg_interfaces.xrfm_interfaces import RandomParamsxRFMAlgInterface
         config = self.get_config()
         n_hyperopt_steps = config['n_hyperopt_steps']
+        # Pass progress state from fit() if available for async UI updates
+        if hasattr(self, 'hyperopt_progress_'):
+            config['hyperopt_progress'] = self.hyperopt_progress_
         interface_type = CaruanaEnsembleAlgInterface if config.get('use_caruana_ensembling',
                                                                    False) else AlgorithmSelectionAlgInterface
         return interface_type([RandomParamsxRFMAlgInterface(model_idx=i, **config)
@@ -2298,6 +2301,9 @@ class XRFM_HPO_Regressor(XRFMHPOConstructorMixin, AlgInterfaceRegressor):
         from pytabkit.models.alg_interfaces.xrfm_interfaces import RandomParamsxRFMAlgInterface
         config = self.get_config()
         n_hyperopt_steps = config['n_hyperopt_steps']
+        # Pass progress state from fit() if available for async UI updates
+        if hasattr(self, 'hyperopt_progress_'):
+            config['hyperopt_progress'] = self.hyperopt_progress_
         interface_type = CaruanaEnsembleAlgInterface if config.get('use_caruana_ensembling',
                                                                    False) else AlgorithmSelectionAlgInterface
         return interface_type([RandomParamsxRFMAlgInterface(model_idx=i, **config)
