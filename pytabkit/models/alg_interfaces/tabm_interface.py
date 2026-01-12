@@ -450,6 +450,122 @@ class TabMSubSplitInterface(SingleSplitAlgInterface):
 
         return y_pred[None].cpu()  # add n_models dimension
 
+    def get_grads(self, ds: DictDataset) -> torch.Tensor:
+        """
+        Compute input gradients for TabM model using jacrev.
+        For categorical features, converts to one-hot encoding and computes gradients
+        w.r.t. the one-hot embeddings (like xRFM does).
+        
+        Parameters
+        ----------
+        ds : DictDataset
+            Input dataset where gradients should be evaluated.
+            
+        Returns
+        -------
+        torch.Tensor of shape (n_samples, n_outputs, n_features)
+            Gradient tensor, where n_features includes one-hot encoded categorical columns.
+        """
+        self.model_.eval()
+        
+        # Preprocess input (same as predict)
+        ds = self.tfm_(ds).to(self.device_)
+        ds.tensors['x_cont'] = ds.tensors['x_cont'][:, self.num_col_mask_]
+        
+        # Extract features
+        x_cont = ds.tensors['x_cont']  # (n_samples, n_num_features)
+        x_cat = ds.tensors.get('x_cat', None) if not ds.tensor_infos['x_cat'].is_empty() else None
+        
+        # Get categorical cardinalities from tensor_infos
+        has_categorical = x_cat is not None and x_cat.shape[1] > 0
+        if has_categorical:
+            cat_cardinalities = ds.tensor_infos['x_cat'].get_cat_sizes().numpy().tolist()
+            
+            # Convert categorical features to one-hot encoding (matching OneHotEncoding0d behavior)
+            x_cat_onehot_list = []
+            for i, cardinality in enumerate(cat_cardinalities):
+                cat_col = x_cat[:, i]
+                # Replace out-of-vocab indices (>= cardinality) with 0 for one-hot encoding
+                temp_cat_col = torch.where(cat_col < cardinality, cat_col, torch.zeros_like(cat_col))
+                one_hot = torch.nn.functional.one_hot(temp_cat_col.long(), num_classes=cardinality + 1)
+                # Remove the last column (for out-of-vocab) to match OneHotEncoding0d behavior
+                one_hot = one_hot[:, :-1].float()
+                # Zero out rows where original value was out-of-vocab
+                mask = cat_col >= cardinality
+                one_hot[mask] = 0
+                x_cat_onehot_list.append(one_hot)
+            
+            x_cat_onehot = torch.cat(x_cat_onehot_list, dim=1)  # (n_samples, sum(cardinalities))
+            
+            # Concatenate numerical and one-hot categorical features
+            X_concat = torch.cat([x_cont, x_cat_onehot], dim=1)  # (n_samples, n_num + n_cat_onehot)
+        else:
+            X_concat = x_cont
+        
+        # Enable gradients on the concatenated input (one-hot embeddings)
+        X_concat = X_concat.requires_grad_(True)
+        
+        # Capture dimensions for the forward function
+        n_num_features = x_cont.shape[1]
+        
+        # Define forward function that uses forward_with_onehot_cat
+        def forward_func(X_input: torch.Tensor) -> torch.Tensor:
+            """Forward pass with concatenated input (numerical + one-hot categorical)."""
+            # Split concatenated input into numerical and one-hot categorical
+            x_num_input = X_input[:, :n_num_features]
+            x_cat_onehot_input = X_input[:, n_num_features:] if has_categorical else None
+            
+            # Use forward_with_onehot_cat which bypasses cat_module
+            output = self.model_.forward_with_onehot_cat(x_num=x_num_input, x_cat_onehot=x_cat_onehot_input)
+            
+            # Handle TabM's ensemble dimension - average over ensemble if needed
+            if output.dim() == 3 and output.shape[1] > 1:  # (batch, k, output_dim)
+                output = output.mean(dim=1)
+            
+            # Ensure output is 2D: (batch, output_dim)
+            if output.dim() == 1:
+                output = output.unsqueeze(1)
+            
+            return output
+        
+        # Compute gradients w.r.t. concatenated input (one-hot embeddings)
+        # Process in batches to avoid memory issues with large inputs
+        n_samples = X_concat.shape[0]
+        batch_size = 32  # Process 32 samples at a time to avoid memory issues
+        
+        grads_list = []
+        with torch.enable_grad():
+            # Define a function that computes gradients for a single sample
+            def forward_single(x_single: torch.Tensor) -> torch.Tensor:
+                """Forward pass for a single sample (1D input)."""
+                x_single = x_single.unsqueeze(0)  # Add batch dimension: (n_features,) -> (1, n_features)
+                output = forward_func(x_single)  # (1, n_outputs)
+                # Squeeze to remove batch dimension: (1, n_outputs) -> (n_outputs,)
+                if output.dim() > 1 and output.shape[0] == 1:
+                    output = output.squeeze(0)
+                return output
+            
+            # Use vmap to compute gradients for all samples in the batch
+            # jacrev(forward_single) computes gradients for a single sample: (n_features,) -> (n_outputs, n_features)
+            # vmap applies this across the batch: (batch_size, n_features) -> (batch_size, n_outputs, n_features)
+            jacrev_single = torch.func.jacrev(forward_single)
+            grads_per_sample_fn = torch.func.vmap(jacrev_single)
+            
+            for i in range(0, n_samples, batch_size):
+                end_idx = min(i + batch_size, n_samples)
+                X_batch = X_concat[i:end_idx]  # (batch_size, n_features)
+                # Compute gradients for all samples in the batch
+                grads_batch = grads_per_sample_fn(X_batch)  # (batch_size, n_outputs, n_features)
+                grads_list.append(grads_batch)
+        
+        # Concatenate all batches
+        if not grads_list:
+            raise RuntimeError("No gradient batches were computed.")
+        
+        grads = torch.cat(grads_list, dim=0)  # (n_samples, n_outputs, n_features)
+        
+        return grads
+
     def get_required_resources(self, ds: DictDataset, n_cv: int, n_refit: int, n_splits: int,
                                split_seeds: List[int], n_train: int) -> RequiredResources:
         assert n_cv == 1
