@@ -28,12 +28,12 @@ class LGBMCustomMetric:
 
     def __call__(self, y_pred: np.ndarray, eval_data):
         # eval_data should be of type lgbm.Dataset
-        y = torch.as_tensor(eval_data.get_label(), dtype=torch.long if self.is_classification else torch.float32)
+        y = torch.from_numpy(eval_data.get_label()).to(dtype=torch.long if self.is_classification else torch.float32)
         if len(y.shape) == 1:
             y = y[:, None]
 
         # print(f'{y_pred.shape=}, {eval_data.get_label().shape=}')
-        y_pred = torch.as_tensor(y_pred, dtype=torch.float32)
+        y_pred = torch.from_numpy(y_pred).to(dtype=torch.float32)
         if len(y_pred.shape) == 1:
             if self.is_classification:
                 if y_pred.shape[0] == y.shape[0]:
@@ -251,7 +251,7 @@ class LGBMSubSplitInterface(TreeBasedSubSplitInterface):
         # bst should be of type lgbm.Booster
         # print(f'LGBM _predict() with {other_params=}')
         num_iteration = None if other_params is None else other_params['n_estimators']
-        y_pred = torch.as_tensor(bst.predict(self._convert_ds(ds).data, num_iteration=num_iteration),
+        y_pred = torch.from_numpy(bst.predict(self._convert_ds(ds).data, num_iteration=num_iteration)).to(
                                  dtype=torch.float32)
         if n_classes == 0:
             y_pred = y_pred.unsqueeze(-1)

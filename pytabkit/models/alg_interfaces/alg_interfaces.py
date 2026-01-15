@@ -374,10 +374,12 @@ class OptAlgInterface(SingleSplitAlgInterface):
             loaded_params = utils.deserialize(tmp_folder / 'params.pkl')
 
             if loaded_params != params:
-                print('Got different params than the saved ones, '
-                      'hyperparameter optimizer might be non-deterministic')
-                print(f'{params=}')
-                print(f'{loaded_params=}', flush=True)
+                verbosity = self.config.get('verbosity', 0)
+                if verbosity >= 1:
+                    print('Got different params than the saved ones, '
+                          'hyperparameter optimizer might be non-deterministic')
+                    print(f'{params=}')
+                    print(f'{loaded_params=}', flush=True)
                 # logger.log(1, 'Got different params than the saved ones, '
                 #               'hyperparameter optimizer might be non-deterministic')
                 # don't set could_load to true, recompute
@@ -492,7 +494,6 @@ class RandomParamsAlgInterface(SingleSplitAlgInterface):
         n_tv_splits = idxs_list[0].n_trainval_splits
         self.alg_interface = self._create_sub_interface(ds, idxs_list[0].split_seed, n_train=idxs_list[0].n_train,
                                                         n_tv_splits=n_tv_splits)
-        print(f'{self.fit_params[0]=}')
         self.alg_interface.fit(ds, idxs_list, interface_resources, logger, tmp_folders, name)
         self.fit_params[0]['sub_fit_params'] = self.alg_interface.fit_params[0]
 

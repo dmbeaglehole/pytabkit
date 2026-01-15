@@ -193,8 +193,8 @@ class LogLinearRegressor:
         self.pessimistic = pessimistic
 
     def fit(self, X: np.ndarray, y: np.ndarray):
-        x = torch.as_tensor(X, dtype=torch.float64)
-        y = torch.as_tensor(y, dtype=torch.float64)
+        x = torch.from_numpy(X).to(dtype=torch.float64)
+        y = torch.from_numpy(y).to(dtype=torch.float64)
         y_log = torch.log(y + 1e-8)
         n_features = x.shape[1]
         self.model_ = LogLinearModule(n_features=n_features)

@@ -126,9 +126,9 @@ def import_from_csv(ds_path: Union[Path, str], task_type: TaskType, task_desc: T
     elif task_type == TaskType.REGRESSION:
         # normalize y
         y = (y - np.mean(y, axis=-1)) / (np.std(y, axis=-1) + 1e-30)
-    ds = DictDataset({'x_cont': torch.as_tensor(x_cont, dtype=torch.float32),
-                      'x_cat': torch.as_tensor(x_cat, dtype=torch.long),
-                      'y': torch.as_tensor(y[:, None])},
+    ds = DictDataset({'x_cont': torch.from_numpy(x_cont).to(dtype=torch.float32),
+                      'x_cat': torch.from_numpy(x_cat).to(dtype=torch.long),
+                      'y': torch.from_numpy(y[:, None])},
                      {'x_cont': TensorInfo(feat_shape=[x_cont.shape[-1]]),
                       'x_cat': TensorInfo(cat_sizes=cat_sizes),
                       'y': TensorInfo(cat_sizes=[n_classes])})
@@ -274,8 +274,8 @@ class PandasTask:
         else:
             y = np.array(self.y_df, dtype=np.float32)
 
-        ds = DictDataset({'x_cont': torch.as_tensor(x_cont), 'x_cat': torch.as_tensor(x_cat),
-                          'y': torch.as_tensor(y[:, None])},
+        ds = DictDataset({'x_cont': torch.from_numpy(x_cont), 'x_cat': torch.from_numpy(x_cat),
+                          'y': torch.from_numpy(y[:, None])},
                          {'x_cont': TensorInfo(feat_shape=[x_cont.shape[-1]]),
                           'x_cat': TensorInfo(cat_sizes=cat_sizes),
                           'y': TensorInfo(cat_sizes=[self.get_n_classes()])})

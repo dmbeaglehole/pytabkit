@@ -27,12 +27,12 @@ class XGBCustomMetric:
 
     def __call__(self, y_pred: np.ndarray, dtrain):
         # dtrain should be of type xgb.DMatrix
-        y = torch.as_tensor(dtrain.get_label(), dtype=torch.long if self.is_classification else torch.float32)
+        y = torch.from_numpy(dtrain.get_label()).to(dtype=torch.long if self.is_classification else torch.float32)
         if len(y.shape) == 1:
             y = y[:, None]
 
         # print(f'{y_pred.shape=}, {eval_data.get_label().shape=}')
-        y_pred = torch.as_tensor(y_pred, dtype=torch.float32)
+        y_pred = torch.from_numpy(y_pred).to(dtype=torch.float32)
         if len(y_pred.shape) == 1:
             if self.is_classification:
                 if y_pred.shape[0] == y.shape[0]:
@@ -269,7 +269,7 @@ class XGBSubSplitInterface(TreeBasedSubSplitInterface):
         # print(f'XGB _predict() with {other_params=}')
         # print(f'predict with {ds.n_samples=}, {ds.tensors["x_cont"][4]=}, {ds.tensors["x_cat"][4]=}, {ds.tensors["x_cont"][240]=}, {ds.tensors["x_cat"][240]=}')
         iteration_range = (0, 0) if other_params is None else (0, int(other_params['n_estimators']))
-        y_pred = torch.as_tensor(bst.predict(self._convert_ds(ds), iteration_range=iteration_range),
+        y_pred = torch.from_numpy(bst.predict(self._convert_ds(ds), iteration_range=iteration_range)).to(
                                  dtype=torch.float32)
         if n_classes == 0:
             y_pred = y_pred.unsqueeze(-1)

@@ -492,7 +492,7 @@ def compute_bins(
                 # https://scikit-learn.org/1.0/auto_examples/tree/plot_unveil_tree_structure.html#tree-structure
                 if tree.children_left[node_id] != tree.children_right[node_id]:
                     feature_bin_edges.append(float(tree.threshold[node_id]))
-            bins.append(torch.as_tensor(feature_bin_edges).unique())
+            bins.append(torch.from_numpy(np.asarray(feature_bin_edges)).unique())
         _check_bins(bins)
         return [x.to(device=X.device, dtype=X.dtype) for x in bins]
 

@@ -83,7 +83,7 @@ def torch_np_quantile(tensor: torch.Tensor, q: float, dim: int, keepdim: bool = 
     """
     x_np = tensor.detach().cpu().numpy()
     q_np = np.quantile(x_np, q=q, axis=dim, keepdims=keepdim)
-    return torch.as_tensor(q_np, device=tensor.device, dtype=tensor.dtype)
+    return torch.from_numpy(q_np).to(device=tensor.device, dtype=tensor.dtype)
 
 
 from time import perf_counter

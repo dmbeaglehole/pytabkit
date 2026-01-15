@@ -55,8 +55,13 @@ class ToDictDatasetConverter:
                  make_column_selector(dtype_include=["string", "object", "category", "boolean"]))
             ])
 
-        x_cont = torch.as_tensor(self.num_tf.fit_transform(x), dtype=torch.float32)
-        x_cat = torch.as_tensor(self.cat_tf.fit_transform(x) + 1, dtype=torch.long)
+        x_fit32 = np.ascontiguousarray(self.num_tf.fit_transform(x), dtype=np.float32)
+        x_cont = torch.from_numpy(x_fit32)  # should be instant
+        # print(f"[ToDictDatasetConverter] Fitting cat_tf with x.shape: {x.shape}")
+        x_cat = torch.from_numpy(self.cat_tf.fit_transform(x) + 1).to(torch.long)
+        # print(f"[ToDictDatasetConverter] x_cat shape: {x_cat.shape}")
+        # exit()
+
 
         # print(f'{self.num_tf.transformers_=}')
         # print(f'{self.cat_tf.transformers_=}')
@@ -95,14 +100,14 @@ class ToDictDatasetConverter:
         # print(set(x.columns), self.fitted_columns)
 
         if set(x.columns) != self.fitted_columns:
-            print('Raising column error')
             # second line is to satisfy the sklearn test
             # check_n_features_in_after_fitting in scikit-learn >= 1.6
             raise ValueError(f'Different columns during fit() and predict(): {self.fitted_columns} and {set(x.columns)}\n'
                              f'X has {len(x.columns)} features, but estimator is expecting {len(self.fitted_columns)} features as input')
 
-        x_cont = torch.as_tensor(self.num_tf.transform(x), dtype=torch.float32)
-        x_cat = torch.as_tensor(self.cat_tf.transform(x) + 1, dtype=torch.long)
+        x_fit32 = self.num_tf.transform(x).astype(np.float32)
+        x_cont = torch.from_numpy(x_fit32)
+        x_cat = torch.from_numpy(self.cat_tf.transform(x) + 1).to(dtype=torch.long)
 
         return DictDataset(tensors={'x_cont': x_cont, 'x_cat': x_cat}, tensor_infos=self.tensor_infos)
 

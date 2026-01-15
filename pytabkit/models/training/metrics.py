@@ -98,7 +98,7 @@ def multi_pinball_loss(y_pred: torch.Tensor, y: torch.Tensor, quantiles: List[fl
     assert err.shape[-1] == len(quantiles)
     # print(f'{quantile*err=}')
     # print(f'{y_pred[:5]=}, {y[:5]=}')
-    quantiles = torch.as_tensor(quantiles, dtype=torch.float32, device=err.device)
+    quantiles = torch.from_numpy(np.asarray(quantiles)).to(dtype=torch.float32, device=err.device)
     res = torch.maximum((1 - quantiles) * err, -quantiles * err).mean(dim=-1)
     return apply_reduction(res, reduction)
 
@@ -235,9 +235,9 @@ def expected_calibration_error(y_pred: torch.Tensor, y: torch.Tensor):
 
     if len(y_pred.shape) == 3:
         # input had n_models dimension, so output should have it, too
-        return torch.as_tensor(model_scores, dtype=torch.float32)
+        return torch.from_numpy(np.asarray(model_scores)).to(dtype=torch.float32)
     else:
-        return torch.as_tensor(model_scores[0], dtype=torch.float32)
+        return torch.from_numpy(np.asarray(model_scores[0])).to(dtype=torch.float32)
 
 
 def auc_ovr_torchmetrics(y_pred: torch.Tensor, y: torch.Tensor):
@@ -285,9 +285,9 @@ def auc_ovr_torchmetrics(y_pred: torch.Tensor, y: torch.Tensor):
 
     if len(y_pred.shape) == 3:
         # input had n_models dimension, so output should have it, too
-        return torch.as_tensor(model_scores, dtype=torch.float32)
+        return torch.from_numpy(np.asarray(model_scores)).to(dtype=torch.float32)
     else:
-        return torch.as_tensor(model_scores[0], dtype=torch.float32)
+        return torch.from_numpy(np.asarray(model_scores[0])).to(dtype=torch.float32)
 
 
 class Metrics:
@@ -542,9 +542,9 @@ class Metrics:
 
         if len(y_pred.shape) == 3:
             # input had n_models dimension, so output should have it, too
-            return torch.as_tensor(model_scores, dtype=torch.float32)
+            return torch.from_numpy(np.asarray(model_scores)).to(dtype=torch.float32)
         else:
-            return torch.as_tensor(model_scores[0], dtype=torch.float32)
+            return torch.from_numpy(np.asarray(model_scores[0])).to(dtype=torch.float32)
 
     @staticmethod
     def avg_preds(y_preds: List[torch.Tensor], task_type):

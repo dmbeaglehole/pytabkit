@@ -490,7 +490,7 @@ class RFFeatureImportanceFactory(Fitter, FitterFactory):
             # assume it's classification
             model = RandomForestClassifier(n_estimators=n_estimators, n_jobs=1)
         model.fit(x, y)
-        scale = torch.as_tensor(model.feature_importances_, dtype=torch.float32, device=ds.device)
+        scale = torch.from_numpy(model.feature_importances_).to(dtype=torch.float32, device=ds.device)
         # print(f'RF feature importances: {scale}')
         scale *= np.sqrt(scale.shape[0]) / scale.norm(dim=-1)
         return ScaleLayer(Variable(scale[None, :], trainable=False))

@@ -88,11 +88,11 @@ class CatBoostCustomMetric:
         assert len(target) == len(approxes[0])
         assert weight is None
 
-        y = torch.as_tensor(target, dtype=torch.long if self.is_classification else torch.float32)
+        y = torch.from_numpy(np.asarray(target)).to(dtype=torch.long if self.is_classification else torch.float32)
         if len(y.shape) == 1:
             y = y[:, None]
 
-        y_pred = torch.as_tensor(np.array(approxes), dtype=torch.float32).t()
+        y_pred = torch.from_numpy(np.array(approxes)).to(dtype=torch.float32).t()
         # CatBoost already provides logits in approxes
 
         if self.select_pred_col is not None:
@@ -275,8 +275,8 @@ class CatBoostSubSplitInterface(TreeBasedSubSplitInterface):
         # print(f'CatBoost _predict(): {other_params=}')
         ntree_end = 0 if other_params is None else other_params['n_estimators']
         prediction_type = 'RawFormulaVal' if n_classes == 0 else 'LogProbability'
-        y_pred = torch.as_tensor(
-            bst.predict(self._convert_ds(ds), ntree_end=ntree_end, prediction_type=prediction_type),
+        y_pred = torch.from_numpy(
+            bst.predict(self._convert_ds(ds), ntree_end=ntree_end, prediction_type=prediction_type)).to(
             dtype=torch.float32)
         if n_classes == 0:
             y_pred = y_pred.unsqueeze(-1)

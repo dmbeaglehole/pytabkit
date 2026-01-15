@@ -114,7 +114,7 @@ class PostHocCalibrationAlgInterface(AlgInterface):
                 y_pred_calib = self.calibrators[i].predict_proba(
                     self._transform_probs(y_preds_probs[i].detach().cpu().numpy()))
                 # the np.array(...) is for avoiding read-only array warnings
-                y_pred_calib = torch.as_tensor(np.array(y_pred_calib), dtype=torch.float32)
+                y_pred_calib = torch.from_numpy(np.array(y_pred_calib)).to(dtype=torch.float32)
 
             if self.config.get('use_calib_offset', False):
                 y_pred_calib += 1. / self.n_calibs[i]

@@ -1,10 +1,14 @@
 import contextlib
+import logging
 import random
+import time
 from pathlib import Path
 from typing import Optional, List, Any, Tuple, Dict
 
 import numpy as np
 import torch
+
+_logger = logging.getLogger(__name__)
 
 from pytabkit.models import utils
 from pytabkit.models.alg_interfaces.alg_interfaces import SingleSplitAlgInterface, AlgInterface, \
@@ -30,6 +34,9 @@ class xRFMSubSplitInterface(SingleSplitAlgInterface):
     def fit(self, ds: DictDataset, idxs_list: List[SplitIdxs], interface_resources: InterfaceResources,
             logger: Logger, tmp_folders: List[Optional[Path]], name: str) -> Optional[
         List[List[List[Tuple[Dict, float]]]]]:
+        fit_start_time = time.time()
+        _logger.info(f"[xRFMSubSplitInterface] fit() started, n_samples={ds.n_samples}")
+
         assert len(idxs_list) == 1
         assert idxs_list[0].n_trainval_splits == 1
 
@@ -44,6 +51,7 @@ class xRFMSubSplitInterface(SingleSplitAlgInterface):
         n_train = idxs_list[0].n_train
         n_classes = ds.get_n_classes()
         device = interface_resources.gpu_devices[0] if len(interface_resources.gpu_devices) >= 1 else 'cpu'
+        _logger.info(f"[xRFMSubSplitInterface] n_train={n_train}, n_classes={n_classes}, device={device}")
 
         self.n_classes_ = n_classes
         self.device_ = device
@@ -53,7 +61,6 @@ class xRFMSubSplitInterface(SingleSplitAlgInterface):
         if 'tfms' not in self.config:
             self.config['tfms'] = ['mean_center', 'l2_normalize', 'one_hot']
         if factory is None:
-            print("factory is None, creating factory")
             factory = PreprocessingFactory(**self.config)
 
         if idxs_list[0].val_idxs is None:
@@ -82,9 +89,13 @@ class xRFMSubSplitInterface(SingleSplitAlgInterface):
                 cat_sizes.append(adjusted)
 
         # transform according to factory
+        _logger.info(f"[xRFMSubSplitInterface] Creating preprocessing fitter...")
         fitter: Fitter = factory.create(ds.tensor_infos)
+        _logger.info(f"[xRFMSubSplitInterface] Fitting and transforming training data...")
         self.tfm_, ds_train = fitter.fit_transform(ds_train)
+        _logger.info(f"[xRFMSubSplitInterface] Transforming validation data...")
         ds_val = self.tfm_(ds_val)
+        _logger.info(f"[xRFMSubSplitInterface] Preprocessing complete, x_cont shape: {ds_train.tensors['x_cont'].shape}")
 
         # print("Expected shape from ds_train: ", ds_train.tensors['x_cont'].shape)
         numerical_indices, categorical_indices, categorical_vectors = None, None, None
@@ -169,9 +180,6 @@ class xRFMSubSplitInterface(SingleSplitAlgInterface):
             else:
                 M_batch_size = 8192
 
-        print(f'{kernel_type=}, {M_batch_size=}')
-
-
         if kernel_type == 'sum_power_laplace':
             # SumPowerLaplace tends to prefer a much smaller bandwidth range than the default lpq/l2 kernels.
             # When we land on this kernel inside a broader/random search space (e.g. 'default' or 'sumpower-lpq'),
@@ -250,7 +258,7 @@ class xRFMSubSplitInterface(SingleSplitAlgInterface):
                 model_params['eps'] = float(sumpower_eps)
         fit_params['reg'] = reg
         fit_params['iters'] = iters
-        fit_params['verbose'] = True
+        fit_params['verbose'] = self.config.get('verbosity', 0) >= 1
         fit_params['early_stop_rfm'] = early_stop_rfm
         fit_params['early_stop_multiplier'] = early_stop_multiplier
         fit_params['M_batch_size'] = M_batch_size
@@ -288,14 +296,22 @@ class xRFMSubSplitInterface(SingleSplitAlgInterface):
         tuning_metric = metric_name_to_metric_class[val_metric_name]
 
         from xrfm import xRFM
-        self.model_ = xRFM(rfm_params, device=device, min_subset_size=min_subset_size, 
+        _logger.info(f"[xRFMSubSplitInterface] Creating xRFM model with kernel={model_params.get('kernel')}, bandwidth={model_params.get('bandwidth'):.4f}, min_subset_size={min_subset_size}")
+        verbose = self.config.get('verbosity', 0) >= 1
+        self.model_ = xRFM(rfm_params, device=device, min_subset_size=min_subset_size,
                              tuning_metric=tuning_metric,
-                             categorical_info=categorical_info, 
+                             categorical_info=categorical_info,
                              classification_mode=classification_mode,
                              split_method=split_method, overlap_fraction=overlap_fraction,
-                           use_temperature_tuning=use_temperature_tuning, temp_tuning_space=temp_tuning_space)
+                           use_temperature_tuning=use_temperature_tuning, temp_tuning_space=temp_tuning_space,
+                           verbose=verbose)
 
+        _logger.info(f"[xRFMSubSplitInterface] Starting xRFM.fit() with x_train.shape={x_train.shape}, y_train.shape={y_train.shape}")
+        model_fit_start = time.time()
         self.model_.fit(x_train, y_train, x_val, y_val)
+        model_fit_time = time.time() - model_fit_start
+        total_fit_time = time.time() - fit_start_time
+        _logger.info(f"[xRFMSubSplitInterface] xRFM.fit() completed in {model_fit_time:.2f}s (total fit time: {total_fit_time:.2f}s)")
 
         return None
 

@@ -264,7 +264,7 @@ class ProbclassExperiments:
                 path = self.paths.results_alg_task_split(task_info.task_desc, alg_name, n_cv=self.n_cv,
                                                          split_type=SplitType.RANDOM, split_id=split_idx)
                 rm = ResultManager.load(path, load_other=False, load_preds=True)
-                y_logits_torch = torch.as_tensor(rm.y_preds_cv, dtype=torch.float32)
+                y_logits_torch = torch.from_numpy(rm.y_preds_cv).to(dtype=torch.float32)
 
                 for cv_idx in range(self.n_cv):
                     sub_split = sub_splits[cv_idx]

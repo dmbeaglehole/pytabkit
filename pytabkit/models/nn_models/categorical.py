@@ -172,7 +172,7 @@ class SingleOneHotLayer(Layer):
         self.use_1d_binary_onehot = use_1d_binary_onehot
 
     def _binary(self, x_cat, values):
-        src = torch.as_tensor(values, dtype=torch.float32, device=x_cat.device)
+        src = torch.from_numpy(np.asarray(values)).to(dtype=torch.float32, device=x_cat.device)
         # add other dimensions to match those of x_cat
         src = src[tuple([None] * (x_cat.dim()-1) + [slice(None)])].expand(*(list(x_cat.shape[:-1]) + [-1]))
         return src.gather(dim=-1, index=x_cat)

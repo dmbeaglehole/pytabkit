@@ -1,10 +1,13 @@
 import copy
+import logging
 import time
 from pathlib import Path
 from typing import List, Optional, Dict
 
 import numpy as np
 import torch
+
+_logger = logging.getLogger(__name__)
 
 from pytabkit.models.alg_interfaces.alg_interfaces import SingleSplitAlgInterface, AlgInterface
 from pytabkit.models.alg_interfaces.base import SplitIdxs, InterfaceResources, RequiredResources
@@ -67,6 +70,7 @@ class CaruanaEnsembleAlgInterface(SingleSplitAlgInterface):
             hyperopt_progress['total_steps'] = n_total_steps
 
         # train sub-models
+        _logger.info(f"[CaruanaEnsembleAlgInterface] Starting ensemble training with {n_total_steps} sub-models")
         for alg_idx, alg_ctx in enumerate(self.alg_contexts_):
             # Update progress state for async UI updates
             if hyperopt_progress is not None:
@@ -81,8 +85,12 @@ class CaruanaEnsembleAlgInterface(SingleSplitAlgInterface):
                                                split_id=idxs.split_id) for idxs in idxs_list]
                 else:
                     sub_idxs_list = idxs_list
+                _logger.info(f"[CaruanaEnsembleAlgInterface] Training sub-model {alg_idx + 1}/{n_total_steps}: {type(alg_interface).__name__}")
+                fit_start = time.time()
                 alg_interface.fit(ds, sub_idxs_list, interface_resources, logger, sub_tmp_folders,
                                   name + f'sub-alg-{alg_idx}')
+                fit_time = time.time() - fit_start
+                _logger.info(f"[CaruanaEnsembleAlgInterface] Sub-model {alg_idx + 1}/{n_total_steps} fit completed in {fit_time:.2f}s")
                 sub_fit_params.append(alg_interface.get_fit_params()[0])
 
         if self.fit_params is not None:
@@ -213,6 +221,9 @@ class AlgorithmSelectionAlgInterface(SingleSplitAlgInterface):
 
     def fit(self, ds: DictDataset, idxs_list: List[SplitIdxs], interface_resources: InterfaceResources,
             logger: Logger, tmp_folders: List[Optional[Path]], name: str) -> None:
+        verbosity = self.config.get('verbosity', 0)
+        if verbosity >= 1:
+            print(f"[HPO] Starting hyperparameter optimization...")
         assert len(idxs_list) == 1
 
         # if tmp_folders is specified, then models will be saved there instead of holding all of them in memory
@@ -262,29 +273,47 @@ class AlgorithmSelectionAlgInterface(SingleSplitAlgInterface):
         if hyperopt_progress is not None:
             hyperopt_progress['total_steps'] = n_total_steps
 
+        _logger.info(f"[AlgorithmSelectionAlgInterface] Starting HPO with {n_total_steps} candidates")
+        if verbosity >= 1:
+            print(f"[HPO] Evaluating {n_total_steps} hyperparameter configurations...")
         for alg_idx, alg_ctx in enumerate(self.alg_contexts_):
             if alg_idx > 0 and time_limit_s is not None and (alg_idx+1)/alg_idx*(time.time()-start_time) > time_limit_s:
+                _logger.info(f"[AlgorithmSelectionAlgInterface] Time limit reached, stopping at candidate {alg_idx}")
+                if verbosity >= 1:
+                    print(f"[HPO] Time limit reached, stopping at candidate {alg_idx}")
                 break
             # Update progress state for async UI updates
             if hyperopt_progress is not None:
                 hyperopt_progress['step'] = alg_idx
+            if verbosity >= 2:
+                print(f"[HPO] Training config {alg_idx + 1}/{n_total_steps}...")
             with alg_ctx as alg_interface:
                 sub_tmp_folders = [tmp_folder / str(alg_idx) if tmp_folder is not None else None for tmp_folder in
                                    tmp_folders]
+                _logger.info(f"[AlgorithmSelectionAlgInterface] Fitting candidate {alg_idx + 1}/{n_total_steps}: {type(alg_interface).__name__}")
+                fit_start = time.time()
                 alg_interface.fit(ds, idxs_list, interface_resources, logger, sub_tmp_folders,
                                   name + f'sub-alg-{alg_idx}')
+                fit_time = time.time() - fit_start
+                _logger.info(f"[AlgorithmSelectionAlgInterface] Candidate {alg_idx + 1}/{n_total_steps} fit completed in {fit_time:.2f}s, evaluating...")
                 y_preds = alg_interface.predict(ds)
                 # get out-of-bag predictions
                 y_pred_oob = cat_if_necessary([y_preds[j, idxs_list[0].val_idxs[j]]
                                                for j in range(idxs_list[0].val_idxs.shape[0])], dim=0)
                 loss = Metrics.apply(y_pred_oob.cpu(), y_oob.cpu(), val_metric_name).item()
-                if loss < best_alg_loss:
+                _logger.info(f"[AlgorithmSelectionAlgInterface] Candidate {alg_idx + 1}/{n_total_steps} loss={loss:.6f} (best={best_alg_loss:.6f})")
+                is_best = loss < best_alg_loss
+                if is_best:
                     best_alg_loss = loss
                     best_alg_idx = alg_idx
                     best_sub_fit_params = alg_interface.get_fit_params()[0]
+                if verbosity >= 2:
+                    print(f"[HPO] Config {alg_idx + 1}/{n_total_steps} done in {fit_time:.1f}s, val_{val_metric_name}={loss:.4f}{' (best)' if is_best else ''}")
 
         self.fit_params = [dict(best_alg_idx=best_alg_idx,
                                 sub_fit_params=best_sub_fit_params)]
+        if verbosity >= 1:
+            print(f"[HPO] Best config: {best_alg_idx + 1}/{n_total_steps} with val_{val_metric_name}={best_alg_loss:.4f}")
         logger.log(2, f'Best algorithm has index {best_alg_idx}')
         logger.log(2, f'Algorithm selection fit parameters: {self.fit_params[0]}')
 

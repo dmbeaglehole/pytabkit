@@ -266,7 +266,7 @@ def apply_tfms_rec(tfms: Union[BaseEstimator, List], x: torch.Tensor):
     if isinstance(tfms, list):
         return torch.stack([apply_tfms_rec(tfm, x[i]) for i, tfm in enumerate(tfms)], dim=0)
     else:
-        return torch.as_tensor(tfms.transform(x.detach().cpu().numpy()), dtype=x.dtype, device=x.device)
+        return torch.from_numpy(tfms.transform(x.detach().cpu().numpy())).to(dtype=x.dtype, device=x.device)
 
 
 class SklearnTransformLayer(Layer):

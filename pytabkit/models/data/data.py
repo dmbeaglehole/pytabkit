@@ -33,7 +33,7 @@ class TensorInfo:
     def get_cat_sizes(self) -> torch.Tensor:
         if self.cat_sizes is None and self.feat_shape is not None:
             self.cat_sizes = torch.zeros(*self.feat_shape, dtype=torch.long)
-        return torch.as_tensor(self.cat_sizes)
+        return torch.from_numpy(np.asarray(self.cat_sizes))
 
     def get_n_features(self) -> int:
         return np.prod(self.get_feat_shape())

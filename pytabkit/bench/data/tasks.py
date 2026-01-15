@@ -181,9 +181,9 @@ class TaskInfo:
         """
         path = paths.tasks_task(self.task_desc)
         tensors = {}
-        tensors['x_cont'] = torch.as_tensor(np.load(str(path / 'x_cont.npy'))).type(torch.float32)
-        tensors['x_cat'] = torch.as_tensor(np.load(str(path / 'x_cat.npy'))).type(torch.long)
-        tensors['y'] = torch.as_tensor(np.load(str(path / 'y.npy'))).type(
+        tensors['x_cont'] = torch.from_numpy(np.load(str(path / 'x_cont.npy'))).type(torch.float32)
+        tensors['x_cat'] = torch.from_numpy(np.load(str(path / 'x_cat.npy'))).type(torch.long)
+        tensors['y'] = torch.from_numpy(np.load(str(path / 'y.npy'))).type(
             torch.long if self.task_type == TaskType.CLASSIFICATION else torch.float32)
         ds = DictDataset(tensors=tensors, tensor_infos=self.tensor_infos)
         return Task(task_info=self, ds=ds)

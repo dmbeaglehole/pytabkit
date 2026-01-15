@@ -109,7 +109,7 @@ class SkorchSubSplitInterface(SklearnSubSplitInterface):
             if len(y_pred.shape) == 1:
                 y_pred = y_pred[:, None]
 
-        y_pred = torch.as_tensor(y_pred, dtype=torch.float32)
+        y_pred = torch.from_numpy(y_pred).to(dtype=torch.float32)
         # guard against missing classes in the training set
         # (GBDT interfaces don't need this because they get passed n_classes as a parameter)
         y_pred = insert_missing_class_columns(y_pred, self.train_ds)

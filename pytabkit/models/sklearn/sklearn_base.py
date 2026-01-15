@@ -1,8 +1,11 @@
 import copy
+import logging
 from pathlib import Path
 from typing import Dict, Any, Optional, Union, List
 from warnings import warn
 from packaging.version import Version
+
+_logger = logging.getLogger(__name__)
 
 import numpy as np
 import pandas as pd
@@ -51,7 +54,8 @@ def concat_arrays(x1, x2) -> Any:
 
 
 def check_X_y_wrapper(*args, **kwargs):
-    if Version(sklearn.__version__) >= Version("1.8.0"):
+    # In sklearn 1.6+, 'force_all_finite' is deprecated in favor of 'ensure_all_finite'
+    if Version(sklearn.__version__) >= Version("1.6.0"):
         if 'force_all_finite' in kwargs:
             kwargs['ensure_all_finite'] = kwargs['force_all_finite']
             del kwargs['force_all_finite']
@@ -64,7 +68,8 @@ def check_X_y_wrapper(*args, **kwargs):
 
 
 def check_array_wrapper(*args, **kwargs):
-    if Version(sklearn.__version__) >= Version("1.8.0"):
+    # In sklearn 1.6+, 'force_all_finite' is deprecated in favor of 'ensure_all_finite'
+    if Version(sklearn.__version__) >= Version("1.6.0"):
         if 'force_all_finite' in kwargs:
             kwargs['ensure_all_finite'] = kwargs['force_all_finite']
             del kwargs['force_all_finite']
@@ -167,10 +172,14 @@ class AlgInterfaceEstimator(BaseEstimator):
         `model.hyperopt_progress_` dict which contains {'step': current_step, 'total_steps': total}
         for async UI updates during fitting.
         """
+        params = self.get_config()
+        verbosity = params.get('verbosity', 0)
+
+        if verbosity >= 1:
+            print(f"[{self.__class__.__name__}] fit() started with X.shape={getattr(X, 'shape', 'N/A')}, y.shape={getattr(y, 'shape', 'N/A')}")
 
         # do a first check, this includes to check if X or y are not None before other things are done to them
         check_X_y_wrapper(X, y, force_all_finite='allow-nan', multi_output=True, dtype=None)
-
         # if X is None:
         #     raise ValueError(f'This estimator requires X to be passed, but X is None')
         # if y is None:
@@ -190,7 +199,6 @@ class AlgInterfaceEstimator(BaseEstimator):
         X = to_normal_type(X)
         y = to_normal_type(y)  # need to convert array-like objects to arrays for self.is_y_1d_
 
-        params = self.get_config()
         n_cv = params.get('n_cv', 1)
         n_repeats = params.get('n_repeats', 1)
         # val_fraction is only relevant for n_cv == 1
@@ -238,16 +246,13 @@ class AlgInterfaceEstimator(BaseEstimator):
             if cat_indicator is not None:
                 raise ValueError(f'Specified both cat_col_names and cat_indicator')
             cat_indicator = [col_name in cat_col_names for col_name in X_df.columns]
-        self.x_converter_ = ToDictDatasetConverter(cat_features=cat_indicator, verbosity=params.get('verbosity', 0))
+        self.x_converter_ = ToDictDatasetConverter(cat_features=cat_indicator, verbosity=verbosity)
         self.y_encoder_ = OrdinalEncoder(dtype=np.int64)  # only used for classification
-
         if not self._supports_single_sample() and len(X_df) == 1:
             raise ValueError('Training with one sample is not supported!')
-
         x_ds = self.x_converter_.fit_transform(X_df)
         if torch.any(torch.isnan(x_ds.tensors['x_cont'])):
             raise ValueError('NaN values in continuous columns are currently not allowed!')
-
         self.is_y_float64_ = False  # checked later in the regression case
 
         # convert y
@@ -270,7 +275,7 @@ class AlgInterfaceEstimator(BaseEstimator):
                     DataConversionWarning,
                     stacklevel=2,
                 )
-            y_ds = DictDataset(tensors={'y': torch.as_tensor(y_tfmd, dtype=torch.long)},
+            y_ds = DictDataset(tensors={'y': torch.from_numpy(y_tfmd).to(dtype=torch.long)},
                                tensor_infos={'y': TensorInfo(cat_sizes=[int(np.max(y_tfmd) + 1)])})
             self.classes_ = self.y_encoder_.categories_[0]
             if not self._supports_single_class() and len(self.classes_) == 1:
@@ -284,7 +289,7 @@ class AlgInterfaceEstimator(BaseEstimator):
                 y_tfmd = y_tfmd[:, None]
             if len(y_tfmd.shape) != 2:
                 raise ValueError('len(y.shape) != 2')
-            y_ds = DictDataset(tensors={'y': torch.as_tensor(y_tfmd, dtype=torch.float32)},
+            y_ds = DictDataset(tensors={'y': torch.from_numpy(y_tfmd).to(torch.float32)},
                                tensor_infos={'y': TensorInfo(feat_shape=[y_tfmd.shape[1]])})
             if not self._supports_multioutput() and not self.is_y_1d_:
                 warn(
@@ -302,6 +307,7 @@ class AlgInterfaceEstimator(BaseEstimator):
                                  'from scikit-learn.')
 
         ds = DictDataset.join(x_ds, y_ds)
+        _logger.info(f"[{self.__class__.__name__}] Dataset created: n_samples={ds.n_samples}, n_cont_features={ds.tensor_infos['x_cont'].get_n_features()}, n_cat_features={ds.tensor_infos['x_cat'].get_n_features()}")
 
         # set n_features_in_ as required by https://scikit-learn.org/stable/developers/develop.html
         self.n_features_in_ = ds.tensor_infos['x_cont'].get_n_features() + ds.tensor_infos['x_cat'].get_n_features()
@@ -316,7 +322,9 @@ class AlgInterfaceEstimator(BaseEstimator):
             self.hyperopt_progress_['step'] = 0
             self.hyperopt_progress_['total_steps'] = 0
 
+        _logger.info(f"[{self.__class__.__name__}] Creating alg_interface with n_cv={n_cv}")
         self.cv_alg_interface_ = self._create_alg_interface(n_cv=n_cv)
+        _logger.info(f"[{self.__class__.__name__}] alg_interface created: {type(self.cv_alg_interface_).__name__}")
 
         # ----- get random seeds -----
         random_state = params.get('random_state', None)
@@ -347,7 +355,7 @@ class AlgInterfaceEstimator(BaseEstimator):
                 raise ValueError(f'Providing a validation split requires n_repeats=1, but got {n_repeats=}')
 
             # provided split
-            val_idxs = torch.as_tensor(val_idxs, dtype=torch.long)
+            val_idxs = torch.from_numpy(np.asarray(val_idxs)).to(dtype=torch.long)
             if len(val_idxs.shape) == 1:
                 val_idxs = val_idxs[None, :]
 
@@ -445,8 +453,10 @@ class AlgInterfaceEstimator(BaseEstimator):
 
         interface_resources = InterfaceResources(n_threads=n_threads, gpu_devices=gpu_devices,
                                                  time_in_seconds=time_to_fit_in_seconds)
+        _logger.info(f"[{self.__class__.__name__}] Starting cv_alg_interface_.fit() with n_threads={n_threads}, gpu_devices={gpu_devices}")
         self.cv_alg_interface_.fit(ds=ds, idxs_list=idxs_list, interface_resources=interface_resources,
                                    logger=logger, tmp_folders=tmp_folders, name=self.__class__.__name__)
+        _logger.info(f"[{self.__class__.__name__}] cv_alg_interface_.fit() completed")
 
         # todo: put alg_interface on the CPU after fit() (for saving)? How to do it?
 

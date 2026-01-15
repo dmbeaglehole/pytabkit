@@ -182,14 +182,14 @@ class TabNNModule(pl.LightningModule):
         early_stopping_multiplicative_patience = self.config.get('early_stopping_multiplicative_patience', 2)
 
         for val_metric_name in self.val_metric_names:
-            val_errors = torch.as_tensor(
+            val_errors = torch.from_numpy(np.asarray(
                 [
                     Metrics.apply(
                         y_pred[i, :, :], y[i, :, :], val_metric_name
                     )
                     for i in range(y_pred.shape[0])
                 ]
-            )
+            ))
             val_errors = val_errors.view(
                 self.creator.n_tt_splits, self.creator.n_tv_splits
             )

@@ -253,12 +253,12 @@ class LoadResultsWrapper(AlgInterfaceWrapper):
                                                     split_id=split_id)
         rm = ResultManager.load(results_path)
         y_preds_cv = rm.y_preds_cv if rm.y_preds_cv is not None else rm.other_dict['cv']['y_preds']
-        y_preds_cv = torch.as_tensor(y_preds_cv, dtype=torch.float32)
+        y_preds_cv = torch.from_numpy(y_preds_cv).to(dtype=torch.float32)
         y_preds_refit = None
         if rm.y_preds_refit is not None:
-            y_preds_refit = torch.as_tensor(rm.y_preds_refit, dtype=torch.float32)
+            y_preds_refit = torch.from_numpy(rm.y_preds_refit).to(dtype=torch.float32)
         elif 'refit' in rm.other_dict:
-            y_preds_refit = torch.as_tensor(rm.other_dict['refit']['y_preds'], dtype=torch.float32)
+            y_preds_refit = torch.from_numpy(rm.other_dict['refit']['y_preds']).to(dtype=torch.float32)
         fit_params_cv = rm.other_dict['cv']['fit_params']
         fit_params_refit = None if 'refit' not in rm.other_dict else rm.other_dict['refit']['fit_params']
         return PrecomputedPredictionsAlgInterface(y_preds_cv=y_preds_cv, y_preds_refit=y_preds_refit,
