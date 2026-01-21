@@ -450,6 +450,158 @@ class TabMSubSplitInterface(SingleSplitAlgInterface):
 
         return y_pred[None].cpu()  # add n_models dimension
 
+    def get_grads(self, ds: DictDataset) -> torch.Tensor:
+        """
+        Compute input gradients for TabM model.
+        For categorical features, gradients are taken w.r.t. one-hot embeddings
+        (matching TabM's OneHotEncoding0d behavior).
+        
+        Parameters
+        ----------
+        ds : DictDataset
+            Input dataset where gradients should be evaluated.
+            
+        Returns
+        -------
+        torch.Tensor of shape (n_samples, n_outputs, n_features)
+            Gradient tensor, where n_features includes one-hot encoded categorical columns.
+        """
+        self.model_.eval()
+
+        # Preprocess input (same as predict)
+        ds = self.tfm_(ds).to(self.device_)
+        ds.tensors['x_cont'] = ds.tensors['x_cont'][:, self.num_col_mask_]
+
+        x_cont = ds.tensors['x_cont']
+        x_cat = None if ds.tensor_infos['x_cat'].is_empty() else ds.tensors['x_cat']
+        has_categorical = x_cat is not None and x_cat.shape[1] > 0
+
+        cat_cardinalities: List[int] = []
+        if has_categorical:
+            cat_cardinalities = [int(v) for v in ds.tensor_infos['x_cat'].get_cat_sizes().tolist()]
+
+        n_num_features = x_cont.shape[1]
+        n_cat_features = sum(cat_cardinalities) if has_categorical else 0
+        n_features = n_num_features + n_cat_features
+        n_samples = x_cont.shape[0]
+
+        def make_cat_onehot(x_cat_batch: torch.Tensor) -> torch.Tensor:
+            onehot_chunks = []
+            for i, cardinality in enumerate(cat_cardinalities):
+                col = x_cat_batch[:, i]
+                if col.dtype != torch.long:
+                    col = col.long()
+                # Clamp to keep OOV in the last bucket, then drop it (OneHotEncoding0d behavior).
+                col = torch.clamp(col, 0, cardinality)
+                one_hot = torch.nn.functional.one_hot(col, num_classes=cardinality + 1)[..., :-1]
+                onehot_chunks.append(one_hot)
+            return torch.cat(onehot_chunks, dim=1).to(dtype=x_cont.dtype)
+
+        def forward_concat(x_concat: torch.Tensor) -> torch.Tensor:
+            x_num = x_concat[:, :n_num_features] if n_num_features > 0 else None
+            x_cat_onehot = x_concat[:, n_num_features:] if has_categorical else None
+            output = self.model_.forward_with_onehot_cat(x_num=x_num, x_cat_onehot=x_cat_onehot)
+            if output.dim() == 3:
+                output = output.mean(dim=1)
+            elif output.dim() == 1:
+                output = output.unsqueeze(1)
+            return output
+
+        def forward_single(x_single: torch.Tensor) -> torch.Tensor:
+            return forward_concat(x_single.unsqueeze(0)).squeeze(0)
+
+        if n_samples == 0:
+            return torch.empty((0, 0, n_features), device=x_cont.device, dtype=x_cont.dtype)
+
+        # Infer output dimensionality from a single example.
+        with torch.no_grad():
+            x_num_sample = x_cont[:1] if n_num_features > 0 else None
+            x_cat_sample = make_cat_onehot(x_cat[:1]) if has_categorical else None
+            if n_num_features > 0 and has_categorical:
+                x_sample = torch.cat([x_num_sample, x_cat_sample], dim=1)
+            elif n_num_features > 0:
+                x_sample = x_num_sample
+            else:
+                x_sample = x_cat_sample
+            n_outputs = forward_concat(x_sample).shape[-1]
+
+        def allocate_grads(device: torch.device) -> torch.Tensor:
+            if device.type == 'cpu':
+                return torch.empty(
+                    (n_samples, n_outputs, n_features),
+                    device=device,
+                    dtype=x_cont.dtype,
+                    pin_memory=x_cont.device.type == 'cuda',
+                )
+            return torch.empty((n_samples, n_outputs, n_features), device=device, dtype=x_cont.dtype)
+
+        grad_output_device = self.config.get('grad_output_device', 'auto')
+        grads_device = x_cont.device
+        if grad_output_device in ('cpu', 'host'):
+            grads_device = torch.device('cpu')
+        elif grad_output_device in ('cuda', 'gpu'):
+            grads_device = x_cont.device
+        elif grads_device.type == 'cuda':
+            max_cuda_frac = float(self.config.get('grad_max_cuda_out_frac', 0.3))
+            max_cuda_frac = min(max(max_cuda_frac, 0.01), 0.9)
+            free_mem, _ = torch.cuda.mem_get_info(grads_device)
+            out_bytes = n_samples * n_outputs * n_features * x_cont.element_size()
+            if out_bytes > free_mem * max_cuda_frac:
+                grads_device = torch.device('cpu')
+
+        try:
+            grads = allocate_grads(grads_device)
+        except RuntimeError:
+            if grads_device.type == 'cuda':
+                grads_device = torch.device('cpu')
+                grads = allocate_grads(grads_device)
+            else:
+                raise
+
+        user_batch_size = self.config.get('grad_batch_size', None)
+        if user_batch_size is None:
+            if x_cont.device.type == 'cuda':
+                free_mem, _ = torch.cuda.mem_get_info(x_cont.device)
+                per_sample_bytes = max(1, n_outputs * n_features * x_cont.element_size())
+                mem_frac = float(self.config.get('grad_batch_mem_frac', 0.1))
+                mem_frac = min(max(mem_frac, 0.01), 0.9)
+                target_bytes = free_mem * mem_frac
+                batch_size = max(1, min(int(target_bytes // per_sample_bytes), 8192))
+            else:
+                batch_size = 64
+        else:
+            batch_size = int(user_batch_size)
+        batch_size = min(batch_size, n_samples)
+
+        jacrev_single = torch.func.jacrev(forward_single)
+        vmap_chunk_size = self.config.get('grad_vmap_chunk_size', None)
+        if vmap_chunk_size is not None:
+            vmap_chunk_size = int(vmap_chunk_size)
+            if vmap_chunk_size <= 0:
+                vmap_chunk_size = None
+        grads_per_sample_fn = torch.func.vmap(jacrev_single, chunk_size=vmap_chunk_size)
+
+        with torch.enable_grad():
+            for start in range(0, n_samples, batch_size):
+                end = min(start + batch_size, n_samples)
+                x_num_batch = x_cont[start:end] if n_num_features > 0 else None
+                x_cat_onehot = make_cat_onehot(x_cat[start:end]) if has_categorical else None
+
+                if n_num_features > 0 and has_categorical:
+                    x_batch = torch.cat([x_num_batch, x_cat_onehot], dim=1)
+                elif n_num_features > 0:
+                    x_batch = x_num_batch
+                else:
+                    x_batch = x_cat_onehot
+
+                grads_batch = grads_per_sample_fn(x_batch)
+                if grads.device.type == 'cpu' and x_batch.device.type == 'cuda':
+                    grads[start:end].copy_(grads_batch, non_blocking=grads.is_pinned())
+                else:
+                    grads[start:end] = grads_batch
+
+        return grads
+
     def get_required_resources(self, ds: DictDataset, n_cv: int, n_refit: int, n_splits: int,
                                split_seeds: List[int], n_train: int) -> RequiredResources:
         assert n_cv == 1
@@ -529,5 +681,3 @@ class RandomParamsTabMAlgInterface(RandomParamsAlgInterface):
 
     def set_current_predict_params(self, name: str) -> None:
         super().set_current_predict_params(name)
-
-

@@ -24,7 +24,7 @@ except ImportError:
 
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.preprocessing import QuantileTransformer
-from sklearn.base import check_is_fitted
+from sklearn.utils.validation import check_is_fitted
 import numpy as np
 
 

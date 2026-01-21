@@ -624,3 +624,56 @@ class Model(nn.Module):
             # (B, D_OUT) -> (B, 1, D_OUT)
             x = x[:, None]
         return x
+    
+    def forward_with_onehot_cat(
+        self, x_num: Optional[Tensor] = None, x_cat_onehot: Optional[Tensor] = None
+    ) -> Tensor:
+        """
+        Forward pass that accepts one-hot encoded categorical features directly.
+        This bypasses cat_module since categorical features are already one-hot encoded.
+        Useful for gradient computation where we need gradients w.r.t. one-hot embeddings.
+        
+        Parameters
+        ----------
+        x_num : Optional[Tensor]
+            Numerical features (same as forward)
+        x_cat_onehot : Optional[Tensor]
+            One-hot encoded categorical features of shape (batch, sum(cardinalities))
+            instead of ordinal-encoded integers
+            
+        Returns
+        -------
+        Tensor
+            Model output, same shape as forward()
+        """
+        x = []
+        if x_num is not None:
+            x.append(x_num if self.num_module is None else self.num_module(x_num))
+        if x_cat_onehot is None:
+            assert self.cat_module is None
+        else:
+            # Skip cat_module since we already have one-hot embeddings
+            assert self.cat_module is not None
+            x.append(x_cat_onehot.float())
+        x = torch.column_stack([x_.flatten(1, -1) for x_ in x])
+
+        if self.k is not None:
+            if self.share_training_batches or not self.training:
+                # (B, D) -> (B, K, D)
+                x = x[:, None].expand(-1, self.k, -1)
+            else:
+                # (B * K, D) -> (B, K, D)
+                x = x.reshape(len(x) // self.k, self.k, *x.shape[1:])
+            if self.minimal_ensemble_adapter is not None:
+                x = self.minimal_ensemble_adapter(x)
+        else:
+            assert self.minimal_ensemble_adapter is None
+
+        x = self.backbone(x)
+        x = self.output(x)
+        if self.k is None:
+            # Adjust the output shape for plain networks to make them compatible
+            # with the rest of the script (loss, metrics, predictions, ...).
+            # (B, D_OUT) -> (B, 1, D_OUT)
+            x = x[:, None]
+        return x
