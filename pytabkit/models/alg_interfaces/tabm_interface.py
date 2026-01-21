@@ -452,9 +452,9 @@ class TabMSubSplitInterface(SingleSplitAlgInterface):
 
     def get_grads(self, ds: DictDataset) -> torch.Tensor:
         """
-        Compute input gradients for TabM model using jacrev.
-        For categorical features, converts to one-hot encoding and computes gradients
-        w.r.t. the one-hot embeddings (like xRFM does).
+        Compute input gradients for TabM model.
+        For categorical features, gradients are taken w.r.t. one-hot embeddings
+        (matching TabM's OneHotEncoding0d behavior).
         
         Parameters
         ----------
@@ -467,103 +467,139 @@ class TabMSubSplitInterface(SingleSplitAlgInterface):
             Gradient tensor, where n_features includes one-hot encoded categorical columns.
         """
         self.model_.eval()
-        
+
         # Preprocess input (same as predict)
         ds = self.tfm_(ds).to(self.device_)
         ds.tensors['x_cont'] = ds.tensors['x_cont'][:, self.num_col_mask_]
-        
-        # Extract features
-        x_cont = ds.tensors['x_cont']  # (n_samples, n_num_features)
-        x_cat = ds.tensors.get('x_cat', None) if not ds.tensor_infos['x_cat'].is_empty() else None
-        
-        # Get categorical cardinalities from tensor_infos
+
+        x_cont = ds.tensors['x_cont']
+        x_cat = None if ds.tensor_infos['x_cat'].is_empty() else ds.tensors['x_cat']
         has_categorical = x_cat is not None and x_cat.shape[1] > 0
+
+        cat_cardinalities: List[int] = []
         if has_categorical:
-            cat_cardinalities = ds.tensor_infos['x_cat'].get_cat_sizes().numpy().tolist()
-            
-            # Convert categorical features to one-hot encoding (matching OneHotEncoding0d behavior)
-            x_cat_onehot_list = []
-            for i, cardinality in enumerate(cat_cardinalities):
-                cat_col = x_cat[:, i]
-                # Replace out-of-vocab indices (>= cardinality) with 0 for one-hot encoding
-                temp_cat_col = torch.where(cat_col < cardinality, cat_col, torch.zeros_like(cat_col))
-                one_hot = torch.nn.functional.one_hot(temp_cat_col.long(), num_classes=cardinality + 1)
-                # Remove the last column (for out-of-vocab) to match OneHotEncoding0d behavior
-                one_hot = one_hot[:, :-1].float()
-                # Zero out rows where original value was out-of-vocab
-                mask = cat_col >= cardinality
-                one_hot[mask] = 0
-                x_cat_onehot_list.append(one_hot)
-            
-            x_cat_onehot = torch.cat(x_cat_onehot_list, dim=1)  # (n_samples, sum(cardinalities))
-            
-            # Concatenate numerical and one-hot categorical features
-            X_concat = torch.cat([x_cont, x_cat_onehot], dim=1)  # (n_samples, n_num + n_cat_onehot)
-        else:
-            X_concat = x_cont
-        
-        # Enable gradients on the concatenated input (one-hot embeddings)
-        X_concat = X_concat.requires_grad_(True)
-        
-        # Capture dimensions for the forward function
+            cat_cardinalities = [int(v) for v in ds.tensor_infos['x_cat'].get_cat_sizes().tolist()]
+
         n_num_features = x_cont.shape[1]
-        
-        # Define forward function that uses forward_with_onehot_cat
-        def forward_func(X_input: torch.Tensor) -> torch.Tensor:
-            """Forward pass with concatenated input (numerical + one-hot categorical)."""
-            # Split concatenated input into numerical and one-hot categorical
-            x_num_input = X_input[:, :n_num_features]
-            x_cat_onehot_input = X_input[:, n_num_features:] if has_categorical else None
-            
-            # Use forward_with_onehot_cat which bypasses cat_module
-            output = self.model_.forward_with_onehot_cat(x_num=x_num_input, x_cat_onehot=x_cat_onehot_input)
-            
-            # Handle TabM's ensemble dimension - average over ensemble if needed
-            if output.dim() == 3 and output.shape[1] > 1:  # (batch, k, output_dim)
+        n_cat_features = sum(cat_cardinalities) if has_categorical else 0
+        n_features = n_num_features + n_cat_features
+        n_samples = x_cont.shape[0]
+
+        def make_cat_onehot(x_cat_batch: torch.Tensor) -> torch.Tensor:
+            onehot_chunks = []
+            for i, cardinality in enumerate(cat_cardinalities):
+                col = x_cat_batch[:, i]
+                if col.dtype != torch.long:
+                    col = col.long()
+                # Clamp to keep OOV in the last bucket, then drop it (OneHotEncoding0d behavior).
+                col = torch.clamp(col, 0, cardinality)
+                one_hot = torch.nn.functional.one_hot(col, num_classes=cardinality + 1)[..., :-1]
+                onehot_chunks.append(one_hot)
+            return torch.cat(onehot_chunks, dim=1).to(dtype=x_cont.dtype)
+
+        def forward_concat(x_concat: torch.Tensor) -> torch.Tensor:
+            x_num = x_concat[:, :n_num_features] if n_num_features > 0 else None
+            x_cat_onehot = x_concat[:, n_num_features:] if has_categorical else None
+            output = self.model_.forward_with_onehot_cat(x_num=x_num, x_cat_onehot=x_cat_onehot)
+            if output.dim() == 3:
                 output = output.mean(dim=1)
-            
-            # Ensure output is 2D: (batch, output_dim)
-            if output.dim() == 1:
+            elif output.dim() == 1:
                 output = output.unsqueeze(1)
-            
             return output
-        
-        # Compute gradients w.r.t. concatenated input (one-hot embeddings)
-        # Process in batches to avoid memory issues with large inputs
-        n_samples = X_concat.shape[0]
-        batch_size = 32  # Process 32 samples at a time to avoid memory issues
-        
-        grads_list = []
+
+        def forward_single(x_single: torch.Tensor) -> torch.Tensor:
+            return forward_concat(x_single.unsqueeze(0)).squeeze(0)
+
+        if n_samples == 0:
+            return torch.empty((0, 0, n_features), device=x_cont.device, dtype=x_cont.dtype)
+
+        # Infer output dimensionality from a single example.
+        with torch.no_grad():
+            x_num_sample = x_cont[:1] if n_num_features > 0 else None
+            x_cat_sample = make_cat_onehot(x_cat[:1]) if has_categorical else None
+            if n_num_features > 0 and has_categorical:
+                x_sample = torch.cat([x_num_sample, x_cat_sample], dim=1)
+            elif n_num_features > 0:
+                x_sample = x_num_sample
+            else:
+                x_sample = x_cat_sample
+            n_outputs = forward_concat(x_sample).shape[-1]
+
+        def allocate_grads(device: torch.device) -> torch.Tensor:
+            if device.type == 'cpu':
+                return torch.empty(
+                    (n_samples, n_outputs, n_features),
+                    device=device,
+                    dtype=x_cont.dtype,
+                    pin_memory=x_cont.device.type == 'cuda',
+                )
+            return torch.empty((n_samples, n_outputs, n_features), device=device, dtype=x_cont.dtype)
+
+        grad_output_device = self.config.get('grad_output_device', 'auto')
+        grads_device = x_cont.device
+        if grad_output_device in ('cpu', 'host'):
+            grads_device = torch.device('cpu')
+        elif grad_output_device in ('cuda', 'gpu'):
+            grads_device = x_cont.device
+        elif grads_device.type == 'cuda':
+            max_cuda_frac = float(self.config.get('grad_max_cuda_out_frac', 0.3))
+            max_cuda_frac = min(max(max_cuda_frac, 0.01), 0.9)
+            free_mem, _ = torch.cuda.mem_get_info(grads_device)
+            out_bytes = n_samples * n_outputs * n_features * x_cont.element_size()
+            if out_bytes > free_mem * max_cuda_frac:
+                grads_device = torch.device('cpu')
+
+        try:
+            grads = allocate_grads(grads_device)
+        except RuntimeError:
+            if grads_device.type == 'cuda':
+                grads_device = torch.device('cpu')
+                grads = allocate_grads(grads_device)
+            else:
+                raise
+
+        user_batch_size = self.config.get('grad_batch_size', None)
+        if user_batch_size is None:
+            if x_cont.device.type == 'cuda':
+                free_mem, _ = torch.cuda.mem_get_info(x_cont.device)
+                per_sample_bytes = max(1, n_outputs * n_features * x_cont.element_size())
+                mem_frac = float(self.config.get('grad_batch_mem_frac', 0.1))
+                mem_frac = min(max(mem_frac, 0.01), 0.9)
+                target_bytes = free_mem * mem_frac
+                batch_size = max(1, min(int(target_bytes // per_sample_bytes), 8192))
+            else:
+                batch_size = 64
+        else:
+            batch_size = int(user_batch_size)
+        batch_size = min(batch_size, n_samples)
+
+        jacrev_single = torch.func.jacrev(forward_single)
+        vmap_chunk_size = self.config.get('grad_vmap_chunk_size', None)
+        if vmap_chunk_size is not None:
+            vmap_chunk_size = int(vmap_chunk_size)
+            if vmap_chunk_size <= 0:
+                vmap_chunk_size = None
+        grads_per_sample_fn = torch.func.vmap(jacrev_single, chunk_size=vmap_chunk_size)
+
         with torch.enable_grad():
-            # Define a function that computes gradients for a single sample
-            def forward_single(x_single: torch.Tensor) -> torch.Tensor:
-                """Forward pass for a single sample (1D input)."""
-                x_single = x_single.unsqueeze(0)  # Add batch dimension: (n_features,) -> (1, n_features)
-                output = forward_func(x_single)  # (1, n_outputs)
-                # Squeeze to remove batch dimension: (1, n_outputs) -> (n_outputs,)
-                if output.dim() > 1 and output.shape[0] == 1:
-                    output = output.squeeze(0)
-                return output
-            
-            # Use vmap to compute gradients for all samples in the batch
-            # jacrev(forward_single) computes gradients for a single sample: (n_features,) -> (n_outputs, n_features)
-            # vmap applies this across the batch: (batch_size, n_features) -> (batch_size, n_outputs, n_features)
-            jacrev_single = torch.func.jacrev(forward_single)
-            grads_per_sample_fn = torch.func.vmap(jacrev_single)
-            
-            for i in range(0, n_samples, batch_size):
-                end_idx = min(i + batch_size, n_samples)
-                X_batch = X_concat[i:end_idx]  # (batch_size, n_features)
-                # Compute gradients for all samples in the batch
-                grads_batch = grads_per_sample_fn(X_batch)  # (batch_size, n_outputs, n_features)
-                grads_list.append(grads_batch)
-        
-        # Concatenate all batches
-        if not grads_list:
-            raise RuntimeError("No gradient batches were computed.")
-        
-        grads = torch.cat(grads_list, dim=0)  # (n_samples, n_outputs, n_features)
-        
+            for start in range(0, n_samples, batch_size):
+                end = min(start + batch_size, n_samples)
+                x_num_batch = x_cont[start:end] if n_num_features > 0 else None
+                x_cat_onehot = make_cat_onehot(x_cat[start:end]) if has_categorical else None
+
+                if n_num_features > 0 and has_categorical:
+                    x_batch = torch.cat([x_num_batch, x_cat_onehot], dim=1)
+                elif n_num_features > 0:
+                    x_batch = x_num_batch
+                else:
+                    x_batch = x_cat_onehot
+
+                grads_batch = grads_per_sample_fn(x_batch)
+                if grads.device.type == 'cpu' and x_batch.device.type == 'cuda':
+                    grads[start:end].copy_(grads_batch, non_blocking=grads.is_pinned())
+                else:
+                    grads[start:end] = grads_batch
+
         return grads
 
     def get_required_resources(self, ds: DictDataset, n_cv: int, n_refit: int, n_splits: int,
@@ -645,5 +681,3 @@ class RandomParamsTabMAlgInterface(RandomParamsAlgInterface):
 
     def set_current_predict_params(self, name: str) -> None:
         super().set_current_predict_params(name)
-
-
