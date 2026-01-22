@@ -581,8 +581,10 @@ class TabMSubSplitInterface(SingleSplitAlgInterface):
                 vmap_chunk_size = None
         grads_per_sample_fn = torch.func.vmap(jacrev_single, chunk_size=vmap_chunk_size)
 
+        from tqdm import tqdm
+        grads = grads.cpu()
         with torch.enable_grad():
-            for start in range(0, n_samples, batch_size):
+            for start in tqdm(range(0, n_samples, batch_size), desc="Computing gradients"):
                 end = min(start + batch_size, n_samples)
                 x_num_batch = x_cont[start:end] if n_num_features > 0 else None
                 x_cat_onehot = make_cat_onehot(x_cat[start:end]) if has_categorical else None
@@ -594,11 +596,9 @@ class TabMSubSplitInterface(SingleSplitAlgInterface):
                 else:
                     x_batch = x_cat_onehot
 
-                grads_batch = grads_per_sample_fn(x_batch)
-                if grads.device.type == 'cpu' and x_batch.device.type == 'cuda':
-                    grads[start:end].copy_(grads_batch, non_blocking=grads.is_pinned())
-                else:
-                    grads[start:end] = grads_batch
+                with torch.no_grad():
+                    grads_batch = grads_per_sample_fn(x_batch).cpu()
+                grads[start:end] = grads_batch
 
         return grads
 
