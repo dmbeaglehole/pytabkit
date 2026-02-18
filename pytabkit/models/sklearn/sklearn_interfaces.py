@@ -1141,6 +1141,7 @@ class RealMLPHPOConstructorMixin:
                  n_caruana_steps: Optional[int] = None, n_epochs: Optional[int] = None,
                  use_caruana_ensembling: Optional[bool] = None, train_metric_name: Optional[str] = None,
                  time_limit_s: Optional[float] = None,
+                 batch_size: Optional[int] = None,
                  ):
         """
 
@@ -1219,6 +1220,7 @@ class RealMLPHPOConstructorMixin:
         self.use_caruana_ensembling = use_caruana_ensembling
         self.train_metric_name = train_metric_name
         self.time_limit_s = time_limit_s
+        self.batch_size = batch_size
 
 
 class RealMLP_HPO_Classifier(RealMLPHPOConstructorMixin, AlgInterfaceClassifier):

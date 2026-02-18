@@ -624,10 +624,11 @@ class RandomParamsTabMAlgInterface(RandomParamsAlgInterface):
     def _sample_params(self, is_classification: bool, seed: int, n_train: int):
         rng = np.random.default_rng(seed)
         # adapted from Grinsztajn et al. (2022)
+        batch_size_override = self.config.get('batch_size', None)
         hpo_space_name = self.config.get('hpo_space_name', 'default')
         if hpo_space_name == 'default':
             params = {
-                "batch_size": "auto",
+                "batch_size": batch_size_override if batch_size_override is not None else "auto",
                 "patience": 16,
                 "allow_amp": True,
                 "arch_type": "tabm-mini",
@@ -648,7 +649,7 @@ class RandomParamsTabMAlgInterface(RandomParamsAlgInterface):
             }
         elif hpo_space_name == 'tabarena':
             params = {
-                "batch_size": "auto",
+                "batch_size": batch_size_override if batch_size_override is not None else "auto",
                 "patience": 16,
                 "allow_amp": False,  # only for GPU, maybe we should change it to True?
                 "arch_type": "tabm-mini",
