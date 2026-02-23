@@ -411,10 +411,17 @@ class TabMSubSplitInterface(SingleSplitAlgInterface):
 
         return None
 
+    def to(self, device: str) -> None:
+        self.device_ = device
+        if hasattr(self, 'tfm_') and self.tfm_ is not None:
+            self.tfm_ = self.tfm_.to(torch.device(device))
+        if hasattr(self, 'model_') and self.model_ is not None:
+            self.model_ = self.model_.to(torch.device(device))
+
     def predict(self, ds: DictDataset) -> torch.Tensor:
         self.model_.eval()
 
-        ds = self.tfm_(ds).to(self.device_)
+        ds = self.tfm_(ds.to(self.device_)).to(self.device_)
 
         ds.tensors['x_cont'] = ds.tensors['x_cont'][:, self.num_col_mask_]
 
@@ -469,7 +476,7 @@ class TabMSubSplitInterface(SingleSplitAlgInterface):
         self.model_.eval()
 
         # Preprocess input (same as predict)
-        ds = self.tfm_(ds).to(self.device_)
+        ds = self.tfm_(ds.to(self.device_)).to(self.device_)
         ds.tensors['x_cont'] = ds.tensors['x_cont'][:, self.num_col_mask_]
 
         x_cont = ds.tensors['x_cont']
