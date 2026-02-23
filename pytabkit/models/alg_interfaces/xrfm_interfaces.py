@@ -323,6 +323,7 @@ class xRFMSubSplitInterface(SingleSplitAlgInterface):
             self.model_.to(device)
 
     def predict(self, ds: DictDataset) -> torch.Tensor:
+        self.tfm_ = self.tfm_.to(self.device_)
         ds = self.tfm_(ds.to(self.device_)).to(self.device_)
 
         x_cont = ds.tensors['x_cont']
