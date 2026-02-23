@@ -123,6 +123,10 @@ class SingleSplitWrapperAlgInterface(SingleSplitAlgInterface):
 
         return None
 
+    def to(self, device: str) -> None:
+        for ssi in self.sub_split_interfaces:
+            ssi.to(device)
+
     def predict(self, ds: DictDataset) -> torch.Tensor:
         # todo: pay attention to dimensions
         return torch.cat([s.predict(ds) for s in self.sub_split_interfaces], dim=0)

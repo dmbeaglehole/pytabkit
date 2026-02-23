@@ -498,6 +498,10 @@ class RandomParamsAlgInterface(SingleSplitAlgInterface):
         self.fit_params[0]['sub_fit_params'] = self.alg_interface.fit_params[0]
 
 
+    def to(self, device: str) -> None:
+        if self.alg_interface is not None:
+            self.alg_interface.to(device)
+
     def predict(self, ds: DictDataset) -> torch.Tensor:
         self.alg_interface.set_current_predict_params(self.get_current_predict_params_name())
         return self.alg_interface.predict(ds)
