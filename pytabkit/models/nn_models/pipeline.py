@@ -296,13 +296,11 @@ class TorchQuantileTransform:
             self._references_rev = self._references_rev.to(device)
             self._device = device
 
-    def transform(self, x: torch.Tensor) -> torch.Tensor:
-        """Transform tensor in-place on whatever device it lives on."""
-        self._ensure_device(x.device)
-        orig_dtype = x.dtype
-        n_q = self._references.shape[0]
+    _MAX_CHUNK = 200_000
 
-        x_t = x.float().T  # (n_features, n_samples) in float32
+    def _transform_chunk(self, x_t: torch.Tensor) -> torch.Tensor:
+        """Transform a (n_features, n_samples) float32 chunk."""
+        n_q = self._references.shape[0]
 
         # Forward interp: map x -> uniform via quantiles -> references
         idx_fwd = torch.searchsorted(self._quantiles, x_t.contiguous()).clamp(1, n_q - 1)
@@ -337,7 +335,22 @@ class TorchQuantileTransform:
         else:
             result = uniform
 
-        return result.T.to(orig_dtype)  # (n_samples, n_features)
+        return result
+
+    def transform(self, x: torch.Tensor) -> torch.Tensor:
+        """Transform tensor on whatever device it lives on, chunked to avoid OOM."""
+        self._ensure_device(x.device)
+        orig_dtype = x.dtype
+        n_samples = x.shape[0]
+
+        if n_samples <= self._MAX_CHUNK:
+            return self._transform_chunk(x.float().T).T.to(orig_dtype)
+
+        parts = []
+        for start in range(0, n_samples, self._MAX_CHUNK):
+            end = min(start + self._MAX_CHUNK, n_samples)
+            parts.append(self._transform_chunk(x[start:end].float().T).T)
+        return torch.cat(parts, dim=0).to(orig_dtype)
 
 
 def _get_torch_qt(sklearn_tfm) -> TorchQuantileTransform | None:
