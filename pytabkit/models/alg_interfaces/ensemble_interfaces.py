@@ -285,8 +285,8 @@ class AlgorithmSelectionAlgInterface(SingleSplitAlgInterface):
             # Update progress state for async UI updates
             if hyperopt_progress is not None:
                 hyperopt_progress['step'] = alg_idx
-            if verbosity >= 2:
-                print(f"[HPO] Training config {alg_idx + 1}/{n_total_steps}...")
+            if verbosity >= 1:
+                print(f"[HPO] Training config {alg_idx + 1}/{n_total_steps}...", flush=True)
             with alg_ctx as alg_interface:
                 sub_tmp_folders = [tmp_folder / str(alg_idx) if tmp_folder is not None else None for tmp_folder in
                                    tmp_folders]
@@ -307,8 +307,8 @@ class AlgorithmSelectionAlgInterface(SingleSplitAlgInterface):
                     best_alg_loss = loss
                     best_alg_idx = alg_idx
                     best_sub_fit_params = alg_interface.get_fit_params()[0]
-                if verbosity >= 2:
-                    print(f"[HPO] Config {alg_idx + 1}/{n_total_steps} done in {fit_time:.1f}s, val_{val_metric_name}={loss:.4f}{' (best)' if is_best else ''}")
+                if verbosity >= 1:
+                    print(f"[HPO] Config {alg_idx + 1}/{n_total_steps} done in {fit_time:.1f}s, val_{val_metric_name}={loss:.4f}{' (best)' if is_best else ''}", flush=True)
 
         self.fit_params = [dict(best_alg_idx=best_alg_idx,
                                 sub_fit_params=best_sub_fit_params)]

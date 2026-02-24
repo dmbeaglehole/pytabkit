@@ -262,10 +262,111 @@ class CircleCodingFactory(Fitter, FitterFactory):
         return CircleCodingLayer(scale=self.scale, fitter=self)
 
 
+class TorchQuantileTransform:
+    """GPU-accelerated drop-in for sklearn QuantileTransformer.transform().
+
+    Copies the fitted quantiles/references from an sklearn QuantileTransformer
+    to GPU tensors once, then uses torch.searchsorted + linear interpolation
+    for all subsequent transform calls — avoiding the CPU roundtrip.
+    """
+
+    _BOUNDS_THRESHOLD = 1e-7
+    _CLIP_MIN = -5.199337582605575
+    _CLIP_MAX = 5.19933758270342
+
+    def __init__(self, sklearn_qt):
+        from sklearn.preprocessing import QuantileTransformer as _SKL_QT
+        if not isinstance(sklearn_qt, _SKL_QT):
+            raise TypeError("Expected a fitted sklearn QuantileTransformer")
+        # quantiles_: (n_quantiles, n_features) -> store transposed (n_features, n_quantiles)
+        # Store as float32 — sklearn stores float64 but float32 is sufficient and matches model dtype
+        self._quantiles = torch.from_numpy(sklearn_qt.quantiles_.T.copy()).float().contiguous()
+        self._references = torch.from_numpy(sklearn_qt.references_.copy()).float().contiguous()
+        self._output_distribution = sklearn_qt.output_distribution
+        # Pre-compute reversed versions for backward interp
+        self._quantiles_rev = self._quantiles.flip(1).neg().contiguous()
+        self._references_rev = self._references.flip(0).neg().contiguous()
+        self._device = None  # will be set on first call
+
+    def _ensure_device(self, device):
+        if self._device != device:
+            self._quantiles = self._quantiles.to(device)
+            self._references = self._references.to(device)
+            self._quantiles_rev = self._quantiles_rev.to(device)
+            self._references_rev = self._references_rev.to(device)
+            self._device = device
+
+    def transform(self, x: torch.Tensor) -> torch.Tensor:
+        """Transform tensor in-place on whatever device it lives on."""
+        self._ensure_device(x.device)
+        orig_dtype = x.dtype
+        n_q = self._references.shape[0]
+
+        x_t = x.float().T  # (n_features, n_samples) in float32
+
+        # Forward interp: map x -> uniform via quantiles -> references
+        idx_fwd = torch.searchsorted(self._quantiles, x_t.contiguous()).clamp(1, n_q - 1)
+        q_lo = self._quantiles.gather(1, idx_fwd - 1)
+        q_hi = self._quantiles.gather(1, idx_fwd)
+        r_lo = self._references[idx_fwd - 1]
+        r_hi = self._references[idx_fwd]
+        frac = (x_t - q_lo) / (q_hi - q_lo).clamp(min=1e-12)
+        fwd = r_lo + frac * (r_hi - r_lo)
+
+        # Backward interp (handles repeated quantile values)
+        x_neg = x_t.neg()
+        idx_bwd = torch.searchsorted(self._quantiles_rev, x_neg.contiguous()).clamp(1, n_q - 1)
+        q_lo_b = self._quantiles_rev.gather(1, idx_bwd - 1)
+        q_hi_b = self._quantiles_rev.gather(1, idx_bwd)
+        r_lo_b = self._references_rev[idx_bwd - 1]
+        r_hi_b = self._references_rev[idx_bwd]
+        frac_b = (x_neg - q_lo_b) / (q_hi_b - q_lo_b).clamp(min=1e-12)
+        bwd_neg = r_lo_b + frac_b * (r_hi_b - r_lo_b)
+
+        uniform = 0.5 * (fwd - bwd_neg)
+
+        # Bounds clamping
+        lower_bound_x = self._quantiles[:, 0:1]
+        upper_bound_x = self._quantiles[:, -1:]
+        uniform[x_t - self._BOUNDS_THRESHOLD < lower_bound_x] = 0.0
+        uniform[x_t + self._BOUNDS_THRESHOLD > upper_bound_x] = 1.0
+
+        if self._output_distribution == 'normal':
+            result = (2 * uniform - 1).erfinv() * (2 ** 0.5)
+            result = result.clamp(self._CLIP_MIN, self._CLIP_MAX)
+        else:
+            result = uniform
+
+        return result.T.to(orig_dtype)  # (n_samples, n_features)
+
+
+def _get_torch_qt(sklearn_tfm) -> TorchQuantileTransform | None:
+    """Try to extract a sklearn QuantileTransformer and wrap it."""
+    from sklearn.preprocessing import QuantileTransformer as _SKL_QT
+    if isinstance(sklearn_tfm, _SKL_QT):
+        return TorchQuantileTransform(sklearn_tfm)
+    # TabrQuantileTransformer wraps a sklearn QT in .normalizer_
+    if hasattr(sklearn_tfm, 'normalizer_') and isinstance(sklearn_tfm.normalizer_, _SKL_QT):
+        return TorchQuantileTransform(sklearn_tfm.normalizer_)
+    return None
+
+
+# Cache: maps id(sklearn_tfm) -> TorchQuantileTransform
+_torch_qt_cache: dict = {}
+
+
 def apply_tfms_rec(tfms: Union[BaseEstimator, List], x: torch.Tensor):
     if isinstance(tfms, list):
         return torch.stack([apply_tfms_rec(tfm, x[i]) for i, tfm in enumerate(tfms)], dim=0)
     else:
+        # Try GPU-accelerated path for QuantileTransformer
+        tfm_id = id(tfms)
+        if tfm_id not in _torch_qt_cache:
+            _torch_qt_cache[tfm_id] = _get_torch_qt(tfms)
+        torch_qt = _torch_qt_cache[tfm_id]
+        if torch_qt is not None:
+            return torch_qt.transform(x)
+        # Fallback: sklearn on CPU
         return torch.from_numpy(tfms.transform(x.detach().cpu().numpy())).to(dtype=x.dtype, device=x.device)
 
 

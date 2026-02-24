@@ -124,16 +124,27 @@ class TabMSubSplitInterface(SingleSplitAlgInterface):
         non_train_part_names = ['val']
 
         # transform according to factory
+        import time as _time
+        _v = self.config.get('verbosity', 0) >= 1
         fitter: Fitter = factory.create(ds.tensor_infos)
+        if _v: print(f'[TabM] fit_transform (quantile) on train...', flush=True)
+        _t0 = _time.perf_counter()
         self.tfm_, ds_parts['train'] = fitter.fit_transform(ds_parts['train'])
+        if _v: print(f'[TabM] fit_transform done in {_time.perf_counter()-_t0:.1f}s', flush=True)
         for part in non_train_part_names:
+            if _v: print(f'[TabM] transforming {part}...', flush=True)
+            _t0 = _time.perf_counter()
             ds_parts[part] = self.tfm_(ds_parts[part])
+            if _v: print(f'[TabM] {part} transform done in {_time.perf_counter()-_t0:.1f}s', flush=True)
 
         # filter out numerical columns with only a single value
         x_cont_train = ds_parts['train'].tensors['x_cont']
 
+        if _v: print(f'[TabM] moving data to {device}...', flush=True)
+        _t0 = _time.perf_counter()
         for part in part_names:
             ds_parts[part] = ds_parts[part].to(device)
+        if _v: print(f'[TabM] data moved to {device} in {_time.perf_counter()-_t0:.1f}s', flush=True)
 
         # mask of which columns are not constant
         self.num_col_mask_ = ~torch.all(x_cont_train == x_cont_train[0:1, :], dim=0)
@@ -189,7 +200,10 @@ class TabMSubSplitInterface(SingleSplitAlgInterface):
         # Choose one of the two configurations below.
 
         # TabM
+        if _v: print(f'[TabM] computing bins (num_emb_type={num_emb_type}, n_bins={num_emb_n_bins})...', flush=True)
+        _t0 = _time.perf_counter()
         bins = None if num_emb_type != 'pwl' or n_cont_features == 0 else rtdl_num_embeddings.compute_bins(data['train']['x_cont'], n_bins=num_emb_n_bins)
+        if _v: print(f'[TabM] bins done in {_time.perf_counter()-_t0:.1f}s', flush=True)
         d_out = n_classes if n_classes > 0 else 1
         if train_metric_name is not None and train_metric_name.startswith('multi_pinball'):
             d_out = train_metric_name.count(',')+1
@@ -345,7 +359,9 @@ class TabMSubSplitInterface(SingleSplitAlgInterface):
         except ImportError:
             tqdm = lambda arr, desc: arr
 
-        logger.log(1, '-' * 88 + '\n')
+        _verbose = self.config.get('verbosity', 0) >= 1
+        if _verbose:
+            print('-' * 88, flush=True)
         for epoch in range(n_epochs):
             batches = (
                 torch.randperm(n_train, device=device).split(batch_size)
@@ -379,12 +395,12 @@ class TabMSubSplitInterface(SingleSplitAlgInterface):
 
 
             val_score = evaluate('val')
-            # test_score = evaluate('test')
-            # logger.log(1, f'(val) {val_score:.4f} (test) {test_score:.4f}')
-            logger.log(1, f'(val) {val_score:.4f}')
+            if _verbose:
+                print(f'Epoch {epoch}: (val) {val_score:.4f}', flush=True)
 
             if val_score > best['val']:
-                logger.log(1, '🌸 New best epoch! 🌸')
+                if _verbose:
+                    print('  New best epoch!', flush=True)
                 # best = {'val': val_score, 'test': test_score, 'epoch': epoch}
                 best = {'val': val_score, 'epoch': epoch}
                 remaining_patience = patience
@@ -397,12 +413,9 @@ class TabMSubSplitInterface(SingleSplitAlgInterface):
             if remaining_patience < 0:
                 break
 
-            logger.log(1, '')
-
-        logger.log(1, '\n\nResult:')
-        logger.log(1, str(best))
-
-        logger.log(1, f'Restoring best model')
+        if _verbose:
+            print(f'\nResult: {best}', flush=True)
+            print('Restoring best model', flush=True)
         with torch.no_grad():
             for bp, p in zip(best_params, model.parameters()):
                 p.copy_(bp)
