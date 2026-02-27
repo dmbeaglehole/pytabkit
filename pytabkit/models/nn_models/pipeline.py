@@ -374,6 +374,11 @@ def apply_tfms_rec(tfms: Union[BaseEstimator, List], x: torch.Tensor):
     else:
         # Try GPU-accelerated path for QuantileTransformer
         tfm_id = id(tfms)
+        if tfm_id in _torch_qt_cache:
+            torch_qt = _torch_qt_cache[tfm_id]
+            # Invalidate if id was reused by a different object (stale after GC)
+            if torch_qt is not None and torch_qt._quantiles.shape[0] != x.shape[-1]:
+                del _torch_qt_cache[tfm_id]
         if tfm_id not in _torch_qt_cache:
             _torch_qt_cache[tfm_id] = _get_torch_qt(tfms)
         torch_qt = _torch_qt_cache[tfm_id]
