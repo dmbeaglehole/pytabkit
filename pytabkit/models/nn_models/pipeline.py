@@ -337,6 +337,16 @@ class TorchQuantileTransform:
 
         return result
 
+    def to(self, device):
+        """Move internal tensors to *device* so nn.Module.to() propagation works."""
+        device = torch.device(device) if isinstance(device, str) else device
+        self._quantiles = self._quantiles.to(device)
+        self._references = self._references.to(device)
+        self._quantiles_rev = self._quantiles_rev.to(device)
+        self._references_rev = self._references_rev.to(device)
+        self._device = device
+        return self
+
     def transform(self, x: torch.Tensor) -> torch.Tensor:
         """Transform tensor on whatever device it lives on, chunked to avoid OOM."""
         self._ensure_device(x.device)
@@ -388,6 +398,19 @@ def apply_tfms_rec(tfms: Union[BaseEstimator, List], x: torch.Tensor):
         return torch.from_numpy(tfms.transform(x.detach().cpu().numpy())).to(dtype=x.dtype, device=x.device)
 
 
+def _move_tfms(tfms, *args, **kwargs):
+    """Recursively walk *tfms* (may be a list of lists) and call .to() on TorchQuantileTransform instances."""
+    if isinstance(tfms, list):
+        for item in tfms:
+            _move_tfms(item, *args, **kwargs)
+    elif isinstance(tfms, TorchQuantileTransform):
+        tfms.to(*args, **kwargs)
+    # Also handle cached TorchQuantileTransforms keyed by id(tfms)
+    cached = _torch_qt_cache.get(id(tfms))
+    if cached is not None:
+        cached.to(*args, **kwargs)
+
+
 class SklearnTransformLayer(Layer):
     def __init__(self, tfms: Union[BaseEstimator, List], fitter: Fitter):
         super().__init__(fitter=fitter)
@@ -395,6 +418,11 @@ class SklearnTransformLayer(Layer):
 
     def forward_cont(self, x):
         return apply_tfms_rec(self.tfms, x)
+
+    def to(self, *args, **kwargs):
+        result = super().to(*args, **kwargs)
+        _move_tfms(self.tfms, *args, **kwargs)
+        return result
 
     def _stack(self, layers):
         return SklearnTransformLayer(tfms=[l.tfms for l in layers], fitter=layers[0].fitter)
